@@ -22,7 +22,7 @@ func NewEventRepository(db *sqlx.DB) *EventRepository {
 func (r *EventRepository) FindByID(ctx context.Context, id uuid.UUID) (*model.Event, error) {
 	var event model.Event
 	query := `
-		SELECT id, host_id, title, description, event_date, start_time, end_time,
+		SELECT id, host_id, COALESCE(short_code, '') as short_code, title, description, event_date, start_time, end_time,
 			   location_name, location_address,
 			   ST_Y(location_point::geometry) as latitude,
 			   ST_X(location_point::geometry) as longitude,
@@ -52,7 +52,7 @@ func (r *EventRepository) FindNearby(ctx context.Context, filter EventFilter) ([
 
 	query := `
 		SELECT
-			e.id, e.host_id, e.title, e.description, e.event_date, e.start_time, e.end_time,
+			e.id, e.host_id, COALESCE(e.short_code, '') as short_code, e.title, e.description, e.event_date, e.start_time, e.end_time,
 			e.location_name, e.location_address,
 			ST_Y(e.location_point::geometry) as latitude,
 			ST_X(e.location_point::geometry) as longitude,
@@ -84,7 +84,7 @@ func (r *EventRepository) FindNearby(ctx context.Context, filter EventFilter) ([
 func (r *EventRepository) FindByHostID(ctx context.Context, hostID uuid.UUID) ([]model.Event, error) {
 	var events []model.Event
 	query := `
-		SELECT id, host_id, title, description, event_date, start_time, end_time,
+		SELECT id, host_id, COALESCE(short_code, '') as short_code, title, description, event_date, start_time, end_time,
 			   location_name, location_address,
 			   ST_Y(location_point::geometry) as latitude,
 			   ST_X(location_point::geometry) as longitude,
@@ -103,17 +103,17 @@ func (r *EventRepository) FindByHostID(ctx context.Context, hostID uuid.UUID) ([
 func (r *EventRepository) Create(ctx context.Context, event *model.Event) error {
 	query := `
 		INSERT INTO events (
-			id, host_id, title, description, event_date, start_time, end_time,
+			id, host_id, short_code, title, description, event_date, start_time, end_time,
 			location_name, location_address, location_point, google_place_id,
 			capacity, skill_level, fee, status, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9,
-			ST_SetSRID(ST_MakePoint($10, $11), 4326)::geography,
-			$12, $13, $14, $15, 'open', NOW(), NOW()
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			ST_SetSRID(ST_MakePoint($11, $12), 4326)::geography,
+			$13, $14, $15, $16, 'open', NOW(), NOW()
 		)
 		RETURNING created_at, updated_at`
 	return r.db.QueryRowxContext(ctx, query,
-		event.ID, event.HostID, event.Title, event.Description,
+		event.ID, event.HostID, event.ShortCode, event.Title, event.Description,
 		event.EventDate, event.StartTime, event.EndTime,
 		event.LocationName, event.LocationAddress,
 		event.Longitude, event.Latitude, event.GooglePlaceID,
@@ -164,7 +164,7 @@ func (r *EventRepository) Delete(ctx context.Context, id uuid.UUID) error {
 func (r *EventRepository) FindByShortCode(ctx context.Context, shortCode string) (*model.Event, error) {
 	var event model.Event
 	query := `
-		SELECT id, host_id, title, description, event_date, start_time, end_time,
+		SELECT id, host_id, COALESCE(short_code, '') as short_code, title, description, event_date, start_time, end_time,
 			   location_name, location_address,
 			   ST_Y(location_point::geometry) as latitude,
 			   ST_X(location_point::geometry) as longitude,
@@ -182,7 +182,7 @@ func (r *EventRepository) FindWithHost(ctx context.Context, id uuid.UUID) (*mode
 	var event model.EventSummary
 	query := `
 		SELECT
-			e.id, e.host_id, e.title, e.description, e.event_date, e.start_time, e.end_time,
+			e.id, e.host_id, COALESCE(e.short_code, '') as short_code, e.title, e.description, e.event_date, e.start_time, e.end_time,
 			e.location_name, e.location_address,
 			ST_Y(e.location_point::geometry) as latitude,
 			ST_X(e.location_point::geometry) as longitude,
@@ -213,7 +213,7 @@ func (r *EventRepository) FindUpcoming(ctx context.Context, limit, offset int) (
 	var events []model.EventSummary
 	query := `
 		SELECT
-			e.id, e.host_id, e.title, e.description, e.event_date, e.start_time, e.end_time,
+			e.id, e.host_id, COALESCE(e.short_code, '') as short_code, e.title, e.description, e.event_date, e.start_time, e.end_time,
 			e.location_name, e.location_address,
 			ST_Y(e.location_point::geometry) as latitude,
 			ST_X(e.location_point::geometry) as longitude,

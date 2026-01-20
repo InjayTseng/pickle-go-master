@@ -10,6 +10,7 @@ import (
 	"github.com/anthropics/pickle-go/apps/api/internal/middleware"
 	"github.com/anthropics/pickle-go/apps/api/internal/model"
 	"github.com/anthropics/pickle-go/apps/api/internal/repository"
+	"github.com/anthropics/pickle-go/apps/api/pkg/shortcode"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -160,6 +161,65 @@ func (h *EventHandler) GetEvent(c *gin.Context) {
 	}))
 }
 
+// GetEventByCode returns a single event by short code
+// GET /api/v1/events/by-code/:code
+func (h *EventHandler) GetEventByCode(c *gin.Context) {
+	code := c.Param("code")
+	if code == "" {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse("VALIDATION_ERROR", "Short code is required"))
+		return
+	}
+
+	event, err := h.eventRepo.FindByShortCode(c.Request.Context(), code)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, dto.ErrorResponse("NOT_FOUND", "Event not found"))
+			return
+		}
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to fetch event"))
+		return
+	}
+
+	// Get host information
+	host, err := h.userRepo.FindByID(c.Request.Context(), event.HostID)
+	hostResponse := dto.UserResponse{}
+	if err == nil {
+		hostResponse = dto.FromUser(host)
+	}
+
+	// Get registration counts
+	eventWithCounts, err := h.eventRepo.FindWithHost(c.Request.Context(), event.ID)
+	confirmedCount := 0
+	waitlistCount := 0
+	if err == nil {
+		confirmedCount = eventWithCounts.ConfirmedCount
+		waitlistCount = eventWithCounts.WaitlistCount
+	}
+
+	c.JSON(http.StatusOK, dto.SuccessResponse(dto.EventResponse{
+		ID:        event.ID.String(),
+		Host:      hostResponse,
+		Title:     event.Title,
+		EventDate: event.EventDate.Format("2006-01-02"),
+		StartTime: event.StartTime,
+		EndTime:   event.EndTime,
+		Location: dto.LocationResponse{
+			Name:          event.LocationName,
+			Address:       event.LocationAddress,
+			Lat:           event.Latitude,
+			Lng:           event.Longitude,
+			GooglePlaceID: event.GooglePlaceID,
+		},
+		Capacity:        event.Capacity,
+		ConfirmedCount:  confirmedCount,
+		WaitlistCount:   waitlistCount,
+		SkillLevel:      string(event.SkillLevel),
+		SkillLevelLabel: event.GetSkillLevelLabel(),
+		Fee:             event.Fee,
+		Status:          string(event.Status),
+	}))
+}
+
 // CreateEvent creates a new event
 // POST /api/v1/events
 func (h *EventHandler) CreateEvent(c *gin.Context) {
@@ -188,10 +248,18 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 		return
 	}
 
-	// Create event
+	// Validate date is not in the past
+	today := time.Now().Truncate(24 * time.Hour)
+	if eventDate.Before(today) {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse("VALIDATION_ERROR", "Event date cannot be in the past"))
+		return
+	}
+
+	// Create event with short code
 	event := &model.Event{
 		ID:              uuid.New(),
 		HostID:          userID,
+		ShortCode:       shortcode.Generate(),
 		EventDate:       eventDate,
 		StartTime:       req.StartTime,
 		LocationName:    req.Location.Name,
@@ -224,9 +292,12 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 		return
 	}
 
+	// Generate share URL with short code
+	shareURL := "https://picklego.tw/g/" + event.ShortCode
+
 	c.JSON(http.StatusCreated, dto.SuccessResponse(dto.CreateEventResponse{
 		ID:       event.ID.String(),
-		ShareURL: "https://picklego.tw/events/" + event.ID.String(),
+		ShareURL: shareURL,
 	}))
 }
 

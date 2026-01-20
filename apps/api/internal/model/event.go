@@ -40,6 +40,7 @@ const (
 type Event struct {
 	ID              uuid.UUID   `db:"id" json:"id"`
 	HostID          uuid.UUID   `db:"host_id" json:"host_id"`
+	ShortCode       string      `db:"short_code" json:"short_code"`
 	Title           *string     `db:"title" json:"title,omitempty"`
 	Description     *string     `db:"description" json:"description,omitempty"`
 	EventDate       time.Time   `db:"event_date" json:"event_date"`

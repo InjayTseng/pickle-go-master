@@ -98,6 +98,7 @@ func main() {
 		events := v1.Group("/events")
 		{
 			events.GET("", eventHandler.ListEvents)
+			events.GET("/by-code/:code", eventHandler.GetEventByCode)
 			events.GET("/:id", eventHandler.GetEvent)
 			events.POST("", middleware.AuthRequired(), eventHandler.CreateEvent)
 			events.PUT("/:id", middleware.AuthRequired(), eventHandler.UpdateEvent)
