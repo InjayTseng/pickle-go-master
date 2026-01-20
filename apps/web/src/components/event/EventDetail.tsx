@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { format } from 'date-fns';
 import { zhTW } from 'date-fns/locale';
@@ -22,8 +22,11 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { Spinner } from '@/components/ui/spinner';
 import { useAuthContext } from '@/contexts/AuthContext';
 import { apiClient, Event, RegistrationResponse } from '@/lib/api-client';
+import { useEventRegistrations, useRegisterForEvent, useCancelRegistration } from '@/hooks/useEvents';
+import { RegistrationButton } from './RegistrationButton';
 import { getLineLoginURL } from '@/lib/auth';
 
 interface EventDetailProps {
@@ -33,10 +36,31 @@ interface EventDetailProps {
 export function EventDetail({ event }: EventDetailProps) {
   const router = useRouter();
   const { user, isAuthenticated, isLoading: authLoading } = useAuthContext();
-  const [isRegistering, setIsRegistering] = useState(false);
-  const [registrationResult, setRegistrationResult] = useState<RegistrationResponse | null>(null);
   const [copied, setCopied] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  // Fetch registrations to check user's status
+  const { data: registrationsData, isLoading: registrationsLoading } = useEventRegistrations(
+    isAuthenticated ? event.id : null
+  );
+
+  // Define registration type
+  interface RegistrationWithUser {
+    id: string;
+    status: string;
+    waitlist_position?: number;
+    user?: {
+      id: string;
+      display_name?: string;
+      avatar_url?: string;
+    };
+  }
+
+  // Find user's registration
+  const userRegistration = registrationsData && user
+    ? [...(registrationsData.confirmed || []) as RegistrationWithUser[], ...(registrationsData.waitlist || []) as RegistrationWithUser[]].find(
+        (r) => r.user?.id === user.id
+      )
+    : null;
 
   // Parse event date
   const eventDate = new Date(event.event_date);
@@ -48,39 +72,21 @@ export function EventDetail({ event }: EventDetailProps) {
   const isFull = spotsRemaining <= 0;
   const isHost = user?.id === event.host.id;
   const isCancelled = event.status === 'cancelled';
+  const isCompleted = event.status === 'completed';
 
   // Determine event status badge
   const getStatusBadge = () => {
     if (isCancelled) {
       return <Badge variant="destructive">已取消</Badge>;
     }
+    if (isCompleted) {
+      return <Badge variant="secondary">已結束</Badge>;
+    }
     if (isFull) {
-      return <Badge variant="warning">已滿團</Badge>;
+      return <Badge className="bg-red-500">已滿團</Badge>;
     }
-    return <Badge variant="success">招募中</Badge>;
+    return <Badge className="bg-green-500">招募中</Badge>;
   };
-
-  // Handle registration
-  const handleRegister = useCallback(async () => {
-    if (!isAuthenticated) {
-      // Save intended destination and redirect to login
-      sessionStorage.setItem('redirectAfterLogin', `/events/${event.id}`);
-      window.location.href = getLineLoginURL();
-      return;
-    }
-
-    setIsRegistering(true);
-    setError(null);
-
-    try {
-      const result = await apiClient.registerForEvent(event.id);
-      setRegistrationResult(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '報名失敗，請稍後再試');
-    } finally {
-      setIsRegistering(false);
-    }
-  }, [isAuthenticated, event.id]);
 
   // Handle share
   const handleShare = useCallback(async () => {
@@ -246,23 +252,59 @@ export function EventDetail({ event }: EventDetailProps) {
         </Card>
       )}
 
-      {/* Error Message */}
-      {error && (
-        <div className="mb-6 rounded-lg bg-destructive/10 p-4 text-destructive text-sm">
-          {error}
-        </div>
-      )}
+      {/* Participants List */}
+      {registrationsData && (registrationsData.confirmed?.length > 0 || registrationsData.waitlist?.length > 0) && (
+        <Card className="mb-6">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">參加名單</CardTitle>
+          </CardHeader>
+          <CardContent>
+            {/* Confirmed */}
+            {registrationsData.confirmed?.length > 0 && (
+              <div className="mb-4">
+                <p className="text-sm text-muted-foreground mb-2">
+                  正取 ({registrationsData.confirmed.length})
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {registrationsData.confirmed.map((reg: any) => (
+                    <div key={reg.id} className="flex items-center gap-2 bg-muted rounded-full px-3 py-1">
+                      <Avatar className="h-5 w-5">
+                        <AvatarImage src={reg.user?.avatar_url} />
+                        <AvatarFallback className="text-xs">
+                          {reg.user?.display_name?.[0] || 'U'}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="text-sm">{reg.user?.display_name || 'Unknown'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
 
-      {/* Registration Result */}
-      {registrationResult && (
-        <div className="mb-6 rounded-lg bg-green-50 p-4 text-green-800">
-          <p className="font-medium">{registrationResult.message}</p>
-          {registrationResult.status === 'waitlist' && (
-            <p className="text-sm mt-1">
-              你目前是候補第 {registrationResult.waitlist_position} 位
-            </p>
-          )}
-        </div>
+            {/* Waitlist */}
+            {registrationsData.waitlist?.length > 0 && (
+              <div>
+                <p className="text-sm text-muted-foreground mb-2">
+                  候補 ({registrationsData.waitlist.length})
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  {registrationsData.waitlist.map((reg: any, index: number) => (
+                    <div key={reg.id} className="flex items-center gap-2 bg-amber-50 rounded-full px-3 py-1">
+                      <span className="text-xs text-amber-600 font-medium">#{index + 1}</span>
+                      <Avatar className="h-5 w-5">
+                        <AvatarImage src={reg.user?.avatar_url} />
+                        <AvatarFallback className="text-xs">
+                          {reg.user?.display_name?.[0] || 'U'}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="text-sm">{reg.user?.display_name || 'Unknown'}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {/* Action Buttons */}
@@ -282,31 +324,18 @@ export function EventDetail({ event }: EventDetailProps) {
             )}
           </Button>
 
-          {/* Register Button */}
-          {!isCancelled && !isHost && !registrationResult && (
-            <Button
-              size="lg"
-              className="flex-1"
-              onClick={handleRegister}
-              disabled={isRegistering || authLoading}
-            >
-              {isRegistering ? (
-                '處理中...'
-              ) : isFull ? (
-                '排候補'
-              ) : isAuthenticated ? (
-                '+1 參加'
-              ) : (
-                'Line 登入報名'
-              )}
-            </Button>
-          )}
-
-          {/* Already Registered */}
-          {registrationResult && (
-            <Button size="lg" className="flex-1" variant="secondary" disabled>
-              {registrationResult.status === 'confirmed' ? '已報名' : '已排候補'}
-            </Button>
+          {/* Registration Button */}
+          {!isHost && !isCancelled && !isCompleted && (
+            <div className="flex-1">
+              <RegistrationButton
+                event={event}
+                userRegistration={userRegistration ? {
+                  status: userRegistration.status,
+                  waitlist_position: userRegistration.waitlist_position,
+                } : null}
+                size="lg"
+              />
+            </div>
           )}
 
           {/* Host Actions */}
@@ -321,10 +350,10 @@ export function EventDetail({ event }: EventDetailProps) {
             </Button>
           )}
 
-          {/* Cancelled Event */}
-          {isCancelled && !isHost && (
+          {/* Cancelled/Completed Event */}
+          {(isCancelled || isCompleted) && !isHost && (
             <Button size="lg" className="flex-1" variant="secondary" disabled>
-              活動已取消
+              {isCancelled ? '活動已取消' : '活動已結束'}
             </Button>
           )}
         </div>

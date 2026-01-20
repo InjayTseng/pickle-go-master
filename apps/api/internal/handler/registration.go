@@ -3,6 +3,7 @@ package handler
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/anthropics/pickle-go/apps/api/internal/dto"
@@ -17,13 +18,15 @@ import (
 type RegistrationHandler struct {
 	registrationRepo *repository.RegistrationRepository
 	eventRepo        *repository.EventRepository
+	notificationRepo *repository.NotificationRepository
 }
 
 // NewRegistrationHandler creates a new RegistrationHandler
-func NewRegistrationHandler(registrationRepo *repository.RegistrationRepository, eventRepo *repository.EventRepository) *RegistrationHandler {
+func NewRegistrationHandler(registrationRepo *repository.RegistrationRepository, eventRepo *repository.EventRepository, notificationRepo *repository.NotificationRepository) *RegistrationHandler {
 	return &RegistrationHandler{
 		registrationRepo: registrationRepo,
 		eventRepo:        eventRepo,
+		notificationRepo: notificationRepo,
 	}
 }
 
@@ -102,7 +105,7 @@ func (h *RegistrationHandler) RegisterEvent(c *gin.Context) {
 	if confirmedCount < event.Capacity {
 		// Event has space, confirm registration
 		status = model.RegistrationConfirmed
-		message = "Registration successful!"
+		message = "報名成功！"
 	} else {
 		// Event is full, add to waitlist
 		status = model.RegistrationWaitlist
@@ -112,7 +115,7 @@ func (h *RegistrationHandler) RegisterEvent(c *gin.Context) {
 			return
 		}
 		waitlistPosition = &pos
-		message = "Added to waitlist (position " + string(rune('0'+pos)) + ")"
+		message = fmt.Sprintf("已加入候補（第 %d 位）", pos)
 
 		// Update event status to full if it wasn't already
 		if event.Status != model.EventStatusFull {
@@ -194,8 +197,21 @@ func (h *RegistrationHandler) CancelRegistration(c *gin.Context) {
 	if wasConfirmed {
 		promoted, err := h.registrationRepo.PromoteFromWaitlist(c.Request.Context(), eventID)
 		if err == nil && promoted != nil {
-			// TODO: Send notification to promoted user
-			_ = promoted
+			// Send notification to promoted user
+			event, eventErr := h.eventRepo.FindByID(c.Request.Context(), eventID)
+			if eventErr == nil && h.notificationRepo != nil {
+				eventTitle := event.LocationName
+				if event.Title != nil && *event.Title != "" {
+					eventTitle = *event.Title
+				}
+				eventTitle = fmt.Sprintf("%s @ %s", event.EventDate.Format("01/02"), eventTitle)
+				h.notificationRepo.CreateWaitlistPromotedNotification(
+					c.Request.Context(),
+					promoted.UserID,
+					eventID,
+					eventTitle,
+				)
+			}
 		}
 
 		// Check if event should be set back to open

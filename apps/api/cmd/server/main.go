@@ -43,6 +43,7 @@ func main() {
 	userRepo := repository.NewUserRepository(db)
 	eventRepo := repository.NewEventRepository(db)
 	registrationRepo := repository.NewRegistrationRepository(db)
+	notificationRepo := repository.NewNotificationRepository(db)
 
 	// Initialize Line client
 	lineClient := line.NewClient(line.Config{
@@ -53,9 +54,9 @@ func main() {
 
 	// Initialize handlers
 	authHandler := handler.NewAuthHandler(userRepo, lineClient)
-	userHandler := handler.NewUserHandler(userRepo, eventRepo, registrationRepo)
+	userHandler := handler.NewUserHandler(userRepo, eventRepo, registrationRepo, notificationRepo)
 	eventHandler := handler.NewEventHandler(eventRepo, userRepo, registrationRepo)
-	registrationHandler := handler.NewRegistrationHandler(registrationRepo, eventRepo)
+	registrationHandler := handler.NewRegistrationHandler(registrationRepo, eventRepo, notificationRepo)
 
 	// Initialize router
 	router := gin.New()

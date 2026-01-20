@@ -17,14 +17,16 @@ type UserHandler struct {
 	userRepo         *repository.UserRepository
 	eventRepo        *repository.EventRepository
 	registrationRepo *repository.RegistrationRepository
+	notificationRepo *repository.NotificationRepository
 }
 
 // NewUserHandler creates a new UserHandler
-func NewUserHandler(userRepo *repository.UserRepository, eventRepo *repository.EventRepository, registrationRepo *repository.RegistrationRepository) *UserHandler {
+func NewUserHandler(userRepo *repository.UserRepository, eventRepo *repository.EventRepository, registrationRepo *repository.RegistrationRepository, notificationRepo *repository.NotificationRepository) *UserHandler {
 	return &UserHandler{
 		userRepo:         userRepo,
 		eventRepo:        eventRepo,
 		registrationRepo: registrationRepo,
+		notificationRepo: notificationRepo,
 	}
 }
 
@@ -147,13 +149,53 @@ func (h *UserHandler) GetMyNotifications(c *gin.Context) {
 		return
 	}
 
-	// For now, return empty notifications (notifications feature to be implemented later)
-	_ = claims
+	userID, err := uuid.Parse(claims.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse("INVALID_TOKEN", "Invalid user ID"))
+		return
+	}
+
+	// Check if notification repo is available
+	if h.notificationRepo == nil {
+		c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
+			"notifications": []interface{}{},
+			"total":         0,
+			"unread_count":  0,
+		}))
+		return
+	}
+
+	// Get notifications (limit 50, offset 0 by default)
+	notifications, err := h.notificationRepo.FindByUserID(c.Request.Context(), userID, 50, 0)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to get notifications"))
+		return
+	}
+
+	// Get unread count
+	unreadCount, err := h.notificationRepo.CountUnread(c.Request.Context(), userID)
+	if err != nil {
+		unreadCount = 0
+	}
+
+	// Convert to response format
+	notificationResponses := make([]gin.H, 0, len(notifications))
+	for _, n := range notifications {
+		notificationResponses = append(notificationResponses, gin.H{
+			"id":         n.ID.String(),
+			"type":       n.Type,
+			"title":      n.Title,
+			"message":    n.Message,
+			"event_id":   n.EventID,
+			"is_read":    n.IsRead,
+			"created_at": n.CreatedAt,
+		})
+	}
 
 	c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
-		"notifications": []interface{}{},
-		"total":         0,
-		"unread_count":  0,
+		"notifications": notificationResponses,
+		"total":         len(notificationResponses),
+		"unread_count":  unreadCount,
 	}))
 }
 
