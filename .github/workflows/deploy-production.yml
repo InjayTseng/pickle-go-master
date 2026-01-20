@@ -1,0 +1,434 @@
+# ===========================================
+# Pickle Go - 生產環境部署 Workflow
+# ===========================================
+# 觸發條件:
+#   1. 手動觸發 (workflow_dispatch)
+#   2. 推送版本標籤 (v*.*.*)
+#   3. 從 main 分支手動部署
+#
+# 部署目標: GCP Cloud Run (asia-east1)
+
+name: Deploy Production
+
+on:
+  # 手動觸發部署
+  workflow_dispatch:
+    inputs:
+      deploy_api:
+        description: '部署 API 服務'
+        required: true
+        default: true
+        type: boolean
+      deploy_web:
+        description: '部署 Web 服務'
+        required: true
+        default: true
+        type: boolean
+      skip_tests:
+        description: '跳過測試 (僅緊急情況使用)'
+        required: false
+        default: false
+        type: boolean
+
+  # 版本標籤觸發
+  push:
+    tags:
+      - 'v*.*.*'
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: asia-east1
+  API_SERVICE_NAME: pickle-go-api
+  WEB_SERVICE_NAME: pickle-go-web
+  ARTIFACT_REGISTRY: asia-east1-docker.pkg.dev
+
+jobs:
+  # ===========================================
+  # 前置檢查
+  # ===========================================
+  pre-check:
+    name: Pre-deployment Check
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy_api: ${{ steps.check.outputs.deploy_api }}
+      should_deploy_web: ${{ steps.check.outputs.deploy_web }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Determine deployment scope
+        id: check
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "deploy_api=${{ github.event.inputs.deploy_api }}" >> $GITHUB_OUTPUT
+            echo "deploy_web=${{ github.event.inputs.deploy_web }}" >> $GITHUB_OUTPUT
+          else
+            echo "deploy_api=true" >> $GITHUB_OUTPUT
+            echo "deploy_web=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract version
+        id: version
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            VERSION=${GITHUB_REF#refs/tags/}
+          else
+            VERSION="sha-${GITHUB_SHA::8}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Deploying version: $VERSION"
+
+  # ===========================================
+  # 執行測試 (可選跳過)
+  # ===========================================
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: pre-check
+    if: ${{ github.event.inputs.skip_tests != 'true' }}
+    services:
+      postgres:
+        image: postgis/postgis:15-3.4-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: picklego_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+          cache-dependency-path: apps/api/go.sum
+
+      - name: Run backend tests
+        working-directory: apps/api
+        env:
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/picklego_test?sslmode=disable
+          JWT_SECRET: test-secret-key
+        run: go test -v -race ./...
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run frontend checks
+        working-directory: apps/web
+        run: |
+          pnpm typecheck
+          pnpm lint
+
+  # ===========================================
+  # 建置 API Docker 映像檔
+  # ===========================================
+  build-api:
+    name: Build API Image
+    runs-on: ubuntu-latest
+    needs: [pre-check, test]
+    if: |
+      always() &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      needs.pre-check.outputs.should_deploy_api == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.ARTIFACT_REGISTRY }}
+
+      - name: Build and push API image
+        working-directory: apps/api
+        run: |
+          IMAGE_TAG="${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/pickle-go/${{ env.API_SERVICE_NAME }}"
+
+          docker build \
+            -t ${IMAGE_TAG}:${{ needs.pre-check.outputs.version }} \
+            -t ${IMAGE_TAG}:latest \
+            .
+
+          docker push ${IMAGE_TAG}:${{ needs.pre-check.outputs.version }}
+          docker push ${IMAGE_TAG}:latest
+
+  # ===========================================
+  # 建置 Web Docker 映像檔
+  # ===========================================
+  build-web:
+    name: Build Web Image
+    runs-on: ubuntu-latest
+    needs: [pre-check, test]
+    if: |
+      always() &&
+      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
+      needs.pre-check.outputs.should_deploy_web == 'true'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.ARTIFACT_REGISTRY }}
+
+      - name: Build and push Web image
+        working-directory: apps/web
+        run: |
+          IMAGE_TAG="${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/pickle-go/${{ env.WEB_SERVICE_NAME }}"
+
+          docker build \
+            -t ${IMAGE_TAG}:${{ needs.pre-check.outputs.version }} \
+            -t ${IMAGE_TAG}:latest \
+            --build-arg NEXT_PUBLIC_API_URL=https://api.picklego.tw \
+            --build-arg NEXT_PUBLIC_BASE_URL=https://picklego.tw \
+            --build-arg NEXT_PUBLIC_LINE_CHANNEL_ID=${{ secrets.LINE_CHANNEL_ID }} \
+            --build-arg NEXT_PUBLIC_LINE_REDIRECT_URI=https://picklego.tw/auth/callback \
+            --build-arg NEXT_PUBLIC_GOOGLE_MAPS_API_KEY=${{ secrets.GOOGLE_MAPS_API_KEY }} \
+            --build-arg NEXT_PUBLIC_SENTRY_DSN=${{ secrets.SENTRY_DSN_WEB }} \
+            --build-arg NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ secrets.GA_MEASUREMENT_ID }} \
+            .
+
+          docker push ${IMAGE_TAG}:${{ needs.pre-check.outputs.version }}
+          docker push ${IMAGE_TAG}:latest
+
+  # ===========================================
+  # 部署 API 到 Cloud Run
+  # ===========================================
+  deploy-api:
+    name: Deploy API
+    runs-on: ubuntu-latest
+    needs: [pre-check, build-api]
+    if: needs.pre-check.outputs.should_deploy_api == 'true'
+    environment:
+      name: production
+      url: https://api.picklego.tw
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.API_SERVICE_NAME }} \
+            --image ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/pickle-go/${{ env.API_SERVICE_NAME }}:${{ needs.pre-check.outputs.version }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --add-cloudsql-instances ${{ env.PROJECT_ID }}:${{ env.REGION }}:pickle-go-db \
+            --set-env-vars "ENVIRONMENT=production" \
+            --set-secrets "DATABASE_URL=pickle-go-database-url:latest,JWT_SECRET=pickle-go-jwt-secret:latest,LINE_CHANNEL_ID=pickle-go-line-channel-id:latest,LINE_CHANNEL_SECRET=pickle-go-line-channel-secret:latest,SENTRY_DSN=pickle-go-sentry-dsn-api:latest" \
+            --cpu 1 \
+            --memory 512Mi \
+            --min-instances 0 \
+            --max-instances 10 \
+            --concurrency 80 \
+            --timeout 300s
+
+      - name: Verify deployment
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.API_SERVICE_NAME }} --region ${{ env.REGION }} --format 'value(status.url)')
+          echo "API deployed to: $SERVICE_URL"
+
+          # 健康檢查
+          for i in {1..5}; do
+            HEALTH_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${SERVICE_URL}/health" || echo "000")
+            if [ "$HEALTH_STATUS" = "200" ]; then
+              echo "Health check passed!"
+              exit 0
+            fi
+            echo "Attempt $i: Health check returned $HEALTH_STATUS, retrying..."
+            sleep 10
+          done
+          echo "Health check failed after 5 attempts"
+          exit 1
+
+  # ===========================================
+  # 部署 Web 到 Cloud Run
+  # ===========================================
+  deploy-web:
+    name: Deploy Web
+    runs-on: ubuntu-latest
+    needs: [pre-check, build-web]
+    if: needs.pre-check.outputs.should_deploy_web == 'true'
+    environment:
+      name: production
+      url: https://picklego.tw
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.WEB_SERVICE_NAME }} \
+            --image ${{ env.ARTIFACT_REGISTRY }}/${{ env.PROJECT_ID }}/pickle-go/${{ env.WEB_SERVICE_NAME }}:${{ needs.pre-check.outputs.version }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --cpu 1 \
+            --memory 512Mi \
+            --min-instances 0 \
+            --max-instances 10 \
+            --concurrency 80 \
+            --timeout 60s
+
+      - name: Verify deployment
+        run: |
+          SERVICE_URL=$(gcloud run services describe ${{ env.WEB_SERVICE_NAME }} --region ${{ env.REGION }} --format 'value(status.url)')
+          echo "Web deployed to: $SERVICE_URL"
+
+          # 檢查首頁是否可訪問
+          for i in {1..5}; do
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${SERVICE_URL}" || echo "000")
+            if [ "$HTTP_STATUS" = "200" ]; then
+              echo "Deployment verification passed!"
+              exit 0
+            fi
+            echo "Attempt $i: Got status $HTTP_STATUS, retrying..."
+            sleep 10
+          done
+          echo "Deployment verification failed after 5 attempts"
+          exit 1
+
+  # ===========================================
+  # 部署後通知
+  # ===========================================
+  notify:
+    name: Deployment Notification
+    runs-on: ubuntu-latest
+    needs: [pre-check, deploy-api, deploy-web]
+    if: always()
+    steps:
+      - name: Determine deployment status
+        id: status
+        run: |
+          if [ "${{ needs.deploy-api.result }}" = "success" ] && [ "${{ needs.deploy-web.result }}" = "success" ]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "message=Pickle Go v${{ needs.pre-check.outputs.version }} 部署成功!" >> $GITHUB_OUTPUT
+          elif [ "${{ needs.deploy-api.result }}" = "success" ] || [ "${{ needs.deploy-web.result }}" = "success" ]; then
+            echo "status=partial" >> $GITHUB_OUTPUT
+            echo "message=Pickle Go v${{ needs.pre-check.outputs.version }} 部分部署成功" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "message=Pickle Go v${{ needs.pre-check.outputs.version }} 部署失敗!" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create deployment summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| API | ${{ needs.deploy-api.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Web | ${{ needs.deploy-web.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ needs.pre-check.outputs.version }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**URLs:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Web: https://picklego.tw" >> $GITHUB_STEP_SUMMARY
+          echo "- API: https://api.picklego.tw" >> $GITHUB_STEP_SUMMARY
+
+      # 如果設置了 Slack Webhook，發送通知
+      - name: Send Slack notification
+        if: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+        uses: 8398a7/action-slack@v3
+        with:
+          status: custom
+          custom_payload: |
+            {
+              "text": "${{ steps.status.outputs.message }}",
+              "attachments": [{
+                "color": "${{ steps.status.outputs.status == 'success' && 'good' || 'danger' }}",
+                "fields": [
+                  {
+                    "title": "Version",
+                    "value": "${{ needs.pre-check.outputs.version }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Repository",
+                    "value": "${{ github.repository }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Triggered by",
+                    "value": "${{ github.actor }}",
+                    "short": true
+                  }
+                ]
+              }]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # ===========================================
+  # 建立 GitHub Release (僅限版本標籤)
+  # ===========================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [pre-check, deploy-api, deploy-web]
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release ${{ needs.pre-check.outputs.version }}
+          body: |
+            ## Pickle Go ${{ needs.pre-check.outputs.version }}
+
+            ### Deployment Info
+            - **API:** https://api.picklego.tw
+            - **Web:** https://picklego.tw
+            - **Deployed at:** ${{ github.event.head_commit.timestamp }}
+
+            ### Changes
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
