@@ -1,6 +1,6 @@
 'use client';
 
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { apiClient, Event, EventListResponse, RegistrationResponse } from '@/lib/api-client';
 
 export interface EventQueryParams {
@@ -13,15 +13,68 @@ export interface EventQueryParams {
   offset?: number;
 }
 
-// Hook for fetching events list with geo filter
+// Cache time constants (in milliseconds)
+const CACHE_TIMES = {
+  // Map pins data - frequently accessed, can be slightly stale
+  MAP_PINS: {
+    staleTime: 60 * 1000, // 1 minute - data is considered fresh
+    gcTime: 10 * 60 * 1000, // 10 minutes - keep in cache for background refetch
+  },
+  // Event details - need to be more up-to-date
+  EVENT_DETAIL: {
+    staleTime: 30 * 1000, // 30 seconds
+    gcTime: 5 * 60 * 1000, // 5 minutes
+  },
+  // Registrations - need real-time accuracy
+  REGISTRATIONS: {
+    staleTime: 10 * 1000, // 10 seconds
+    gcTime: 2 * 60 * 1000, // 2 minutes
+  },
+  // User data - can be more aggressively cached
+  USER_DATA: {
+    staleTime: 2 * 60 * 1000, // 2 minutes
+    gcTime: 10 * 60 * 1000, // 10 minutes
+  },
+};
+
+// Hook for fetching events list with geo filter (Map Pins)
 export function useEvents(params: EventQueryParams = {}, enabled = true) {
   return useQuery({
     queryKey: ['events', params],
     queryFn: () => apiClient.listEvents(params),
     enabled,
-    staleTime: 30000, // Consider data stale after 30 seconds
+    staleTime: CACHE_TIMES.MAP_PINS.staleTime,
+    gcTime: CACHE_TIMES.MAP_PINS.gcTime,
     refetchOnWindowFocus: false,
+    // Keep previous data while fetching new data (smooth UX for map)
+    placeholderData: keepPreviousData,
   });
+}
+
+// Hook for fetching events with prefetching for map viewport
+export function useEventsWithPrefetch(params: EventQueryParams = {}, enabled = true) {
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: ['events', params],
+    queryFn: () => apiClient.listEvents(params),
+    enabled,
+    staleTime: CACHE_TIMES.MAP_PINS.staleTime,
+    gcTime: CACHE_TIMES.MAP_PINS.gcTime,
+    refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
+  });
+
+  // Prefetch adjacent areas when map moves
+  const prefetchAdjacentArea = async (newParams: EventQueryParams) => {
+    await queryClient.prefetchQuery({
+      queryKey: ['events', newParams],
+      queryFn: () => apiClient.listEvents(newParams),
+      staleTime: CACHE_TIMES.MAP_PINS.staleTime,
+    });
+  };
+
+  return { ...query, prefetchAdjacentArea };
 }
 
 // Hook for fetching a single event by ID
@@ -30,7 +83,8 @@ export function useEvent(eventId: string | null) {
     queryKey: ['event', eventId],
     queryFn: () => apiClient.getEvent(eventId!),
     enabled: !!eventId,
-    staleTime: 30000,
+    staleTime: CACHE_TIMES.EVENT_DETAIL.staleTime,
+    gcTime: CACHE_TIMES.EVENT_DETAIL.gcTime,
   });
 }
 
@@ -40,7 +94,10 @@ export function useEventRegistrations(eventId: string | null) {
     queryKey: ['eventRegistrations', eventId],
     queryFn: () => apiClient.getEventRegistrations(eventId!),
     enabled: !!eventId,
-    staleTime: 10000,
+    staleTime: CACHE_TIMES.REGISTRATIONS.staleTime,
+    gcTime: CACHE_TIMES.REGISTRATIONS.gcTime,
+    // Refetch on window focus for registrations (important for real-time updates)
+    refetchOnWindowFocus: true,
   });
 }
 
@@ -81,7 +138,8 @@ export function useMyRegistrations() {
   return useQuery({
     queryKey: ['myRegistrations'],
     queryFn: () => apiClient.getMyRegistrations(),
-    staleTime: 30000,
+    staleTime: CACHE_TIMES.USER_DATA.staleTime,
+    gcTime: CACHE_TIMES.USER_DATA.gcTime,
   });
 }
 
@@ -90,9 +148,13 @@ export function useMyEvents() {
   return useQuery({
     queryKey: ['myEvents'],
     queryFn: () => apiClient.getMyEvents(),
-    staleTime: 30000,
+    staleTime: CACHE_TIMES.USER_DATA.staleTime,
+    gcTime: CACHE_TIMES.USER_DATA.gcTime,
   });
 }
+
+// Export cache times for use in providers
+export { CACHE_TIMES };
 
 // Helper to determine event pin color based on status and capacity
 export function getEventPinColor(event: Event): 'green' | 'red' | 'gray' {

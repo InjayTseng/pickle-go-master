@@ -66,6 +66,11 @@ func main() {
 	router.Use(middleware.Logger())
 	router.Use(middleware.CORS(cfg.CORSAllowedOrigins))
 
+	// Rate limiting (only in production)
+	if cfg.Environment == "production" {
+		router.Use(middleware.RateLimit())
+	}
+
 	// Health check endpoint
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
@@ -78,8 +83,11 @@ func main() {
 	// API v1 routes
 	v1 := router.Group("/api/v1")
 	{
-		// Auth routes
+		// Auth routes - with strict rate limiting for security
 		auth := v1.Group("/auth")
+		if cfg.Environment == "production" {
+			auth.Use(middleware.RateLimitStrict())
+		}
 		{
 			auth.POST("/line/callback", authHandler.LineCallback)
 			auth.POST("/refresh", authHandler.RefreshToken)

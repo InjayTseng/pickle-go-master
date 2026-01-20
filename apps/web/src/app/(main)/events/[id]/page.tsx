@@ -4,6 +4,7 @@ import { format } from 'date-fns';
 import { zhTW } from 'date-fns/locale';
 
 import { EventDetail } from '@/components/event/EventDetail';
+import { EventJsonLd } from '@/components/seo/EventJsonLd';
 
 // Server-side data fetching
 async function getEvent(id: string) {
@@ -29,13 +30,18 @@ async function getEvent(id: string) {
   }
 }
 
-// Dynamic metadata for OG tags
+// Dynamic metadata for OG tags and SEO
 export async function generateMetadata({ params }: { params: { id: string } }): Promise<Metadata> {
   const event = await getEvent(params.id);
 
   if (!event) {
     return {
       title: '活動不存在',
+      description: '找不到此活動，可能已被刪除或從未存在。',
+      robots: {
+        index: false,
+        follow: false,
+      },
     };
   }
 
@@ -43,60 +49,89 @@ export async function generateMetadata({ params }: { params: { id: string } }): 
   const eventDate = new Date(event.event_date);
   const dayOfWeek = format(eventDate, 'EEEE', { locale: zhTW });
   const formattedDate = format(eventDate, 'MM/dd', { locale: zhTW });
+  const formattedFullDate = format(eventDate, 'yyyy/MM/dd', { locale: zhTW });
 
   // Calculate spots remaining
   const spotsRemaining = event.capacity - event.confirmed_count;
   const spotsText = spotsRemaining > 0 ? `還缺 ${spotsRemaining} 人` : '已滿團';
 
   // Build title: "01/25 (六) 20:00 @ 內湖運動中心"
-  const title = `${formattedDate} (${dayOfWeek.charAt(0)}) ${event.start_time} @ ${event.location.name}`;
+  const ogTitle = `${formattedDate} (${dayOfWeek.charAt(0)}) ${event.start_time} @ ${event.location.name}`;
 
-  // Build description: "新手友善 | 還缺 3 人"
-  const description = `${event.skill_level_label} | ${spotsText}`;
+  // Build description for SEO: more detailed
+  const seoDescription = `${event.location.name}匹克球揪團 - ${formattedFullDate} ${event.start_time}。程度：${event.skill_level_label}，${spotsText}。${event.fee > 0 ? `費用 NT$${event.fee}` : '免費參加'}。`;
 
-  // Full title for tab
-  const fullTitle = `${event.location.name} 匹克球揪團 ${formattedDate}`;
+  // Short description for social sharing
+  const socialDescription = `${event.skill_level_label} | ${spotsText}`;
+
+  // Full title for browser tab (SEO optimized)
+  const seoTitle = `${event.location.name} 匹克球揪團 ${formattedDate} - ${event.skill_level_label}`;
 
   // Base URL for images
   const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://picklego.tw';
+  const eventUrl = `${baseUrl}/events/${params.id}`;
 
   // Dynamic OG image URL
   const ogImageParams = new URLSearchParams({
-    title: title,
+    title: ogTitle,
     location: event.location.name,
     date: `${formattedDate} (${dayOfWeek.charAt(0)})`,
     spots: spotsText,
   });
   const ogImageUrl = `${baseUrl}/api/og?${ogImageParams.toString()}`;
 
+  // Determine if event should be indexed (past/cancelled events have lower priority)
+  const shouldIndex = event.status !== 'cancelled' && event.status !== 'completed';
+
   return {
-    title: fullTitle,
-    description: description,
+    title: seoTitle,
+    description: seoDescription,
+    keywords: [
+      '匹克球',
+      event.location.name,
+      '匹克球揪團',
+      event.skill_level_label,
+      '打球',
+      '球局',
+    ],
+    alternates: {
+      canonical: eventUrl,
+    },
+    robots: {
+      index: shouldIndex,
+      follow: true,
+      googleBot: {
+        index: shouldIndex,
+        follow: true,
+        'max-image-preview': 'large',
+      },
+    },
     openGraph: {
       type: 'website',
       locale: 'zh_TW',
-      url: `${baseUrl}/events/${params.id}`,
+      url: eventUrl,
       siteName: 'Pickle Go',
-      title: title,
-      description: description,
+      title: ogTitle,
+      description: socialDescription,
       images: [
         {
           url: ogImageUrl,
           width: 1200,
           height: 630,
-          alt: title,
+          alt: ogTitle,
         },
       ],
     },
     twitter: {
       card: 'summary_large_image',
-      title: title,
-      description: description,
+      title: ogTitle,
+      description: socialDescription,
       images: [ogImageUrl],
     },
-    // Additional meta for Line
+    // Additional meta for Line and other platforms
     other: {
       'og:site_name': 'Pickle Go',
+      'og:locale': 'zh_TW',
     },
   };
 }
@@ -114,5 +149,12 @@ export default async function EventPage({ params }: PageProps) {
     notFound();
   }
 
-  return <EventDetail event={event} />;
+  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://picklego.tw';
+
+  return (
+    <>
+      <EventJsonLd event={event} baseUrl={baseUrl} />
+      <EventDetail event={event} />
+    </>
+  );
 }
