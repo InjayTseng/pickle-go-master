@@ -1,0 +1,25 @@
+{
+  "name": "pickle-go",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pickle Go - Web-First Pickleball Meetup Platform",
+  "scripts": {
+    "dev": "pnpm --parallel -r dev",
+    "dev:web": "pnpm --filter @pickle-go/web dev",
+    "dev:api": "pnpm --filter @pickle-go/api dev",
+    "build": "pnpm -r build",
+    "build:web": "pnpm --filter @pickle-go/web build",
+    "lint": "pnpm -r lint",
+    "test": "pnpm -r test",
+    "clean": "pnpm -r clean && rm -rf node_modules",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.0.0"
+}
