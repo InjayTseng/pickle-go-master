@@ -10,8 +10,11 @@ import (
 	"time"
 
 	"github.com/anthropics/pickle-go/apps/api/internal/config"
+	"github.com/anthropics/pickle-go/apps/api/internal/database"
 	"github.com/anthropics/pickle-go/apps/api/internal/handler"
 	"github.com/anthropics/pickle-go/apps/api/internal/middleware"
+	"github.com/anthropics/pickle-go/apps/api/internal/repository"
+	"github.com/anthropics/pickle-go/apps/api/pkg/line"
 	"github.com/gin-gonic/gin"
 )
 
@@ -26,6 +29,33 @@ func main() {
 	if cfg.Environment == "production" {
 		gin.SetMode(gin.ReleaseMode)
 	}
+
+	// Initialize database connection
+	dbCfg := database.DefaultConfig(cfg.DatabaseURL)
+	db, err := database.Connect(dbCfg)
+	if err != nil {
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer db.Close()
+	log.Println("Connected to database")
+
+	// Initialize repositories
+	userRepo := repository.NewUserRepository(db)
+	eventRepo := repository.NewEventRepository(db)
+	registrationRepo := repository.NewRegistrationRepository(db)
+
+	// Initialize Line client
+	lineClient := line.NewClient(line.Config{
+		ChannelID:     cfg.LineChannelID,
+		ChannelSecret: cfg.LineChannelSecret,
+		RedirectURI:   cfg.LineRedirectURI,
+	})
+
+	// Initialize handlers
+	authHandler := handler.NewAuthHandler(userRepo, lineClient)
+	userHandler := handler.NewUserHandler(userRepo, eventRepo, registrationRepo)
+	eventHandler := handler.NewEventHandler(eventRepo, userRepo, registrationRepo)
+	registrationHandler := handler.NewRegistrationHandler(registrationRepo, eventRepo)
 
 	// Initialize router
 	router := gin.New()
@@ -50,33 +80,33 @@ func main() {
 		// Auth routes
 		auth := v1.Group("/auth")
 		{
-			auth.POST("/line/callback", handler.LineCallback)
-			auth.POST("/refresh", middleware.AuthRequired(), handler.RefreshToken)
-			auth.POST("/logout", middleware.AuthRequired(), handler.Logout)
+			auth.POST("/line/callback", authHandler.LineCallback)
+			auth.POST("/refresh", authHandler.RefreshToken)
+			auth.POST("/logout", middleware.AuthRequired(), authHandler.Logout)
 		}
 
 		// User routes
 		users := v1.Group("/users")
 		{
-			users.GET("/me", middleware.AuthRequired(), handler.GetCurrentUser)
-			users.GET("/me/events", middleware.AuthRequired(), handler.GetMyEvents)
-			users.GET("/me/registrations", middleware.AuthRequired(), handler.GetMyRegistrations)
-			users.GET("/me/notifications", middleware.AuthRequired(), handler.GetMyNotifications)
+			users.GET("/me", middleware.AuthRequired(), authHandler.GetCurrentUser)
+			users.GET("/me/events", middleware.AuthRequired(), userHandler.GetMyEvents)
+			users.GET("/me/registrations", middleware.AuthRequired(), userHandler.GetMyRegistrations)
+			users.GET("/me/notifications", middleware.AuthRequired(), userHandler.GetMyNotifications)
 		}
 
 		// Event routes
 		events := v1.Group("/events")
 		{
-			events.GET("", handler.ListEvents)
-			events.GET("/:id", handler.GetEvent)
-			events.POST("", middleware.AuthRequired(), handler.CreateEvent)
-			events.PUT("/:id", middleware.AuthRequired(), handler.UpdateEvent)
-			events.DELETE("/:id", middleware.AuthRequired(), handler.DeleteEvent)
+			events.GET("", eventHandler.ListEvents)
+			events.GET("/:id", eventHandler.GetEvent)
+			events.POST("", middleware.AuthRequired(), eventHandler.CreateEvent)
+			events.PUT("/:id", middleware.AuthRequired(), eventHandler.UpdateEvent)
+			events.DELETE("/:id", middleware.AuthRequired(), eventHandler.DeleteEvent)
 
 			// Registration routes
-			events.POST("/:id/register", middleware.AuthRequired(), handler.RegisterEvent)
-			events.DELETE("/:id/register", middleware.AuthRequired(), handler.CancelRegistration)
-			events.GET("/:id/registrations", handler.GetEventRegistrations)
+			events.POST("/:id/register", middleware.AuthRequired(), registrationHandler.RegisterEvent)
+			events.DELETE("/:id/register", middleware.AuthRequired(), registrationHandler.CancelRegistration)
+			events.GET("/:id/registrations", registrationHandler.GetEventRegistrations)
 		}
 	}
 

@@ -1,0 +1,867 @@
+openapi: 3.0.3
+info:
+  title: Pickle Go API
+  description: |
+    Pickle Go is a web-first pickleball event management platform.
+    This API provides endpoints for user authentication, event management, and registration.
+  version: 1.0.0
+  contact:
+    name: Pickle Go Team
+    url: https://picklego.tw
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local development server
+  - url: https://api.picklego.tw/api/v1
+    description: Production server
+
+tags:
+  - name: Auth
+    description: Authentication endpoints
+  - name: Users
+    description: User management endpoints
+  - name: Events
+    description: Event management endpoints
+  - name: Registrations
+    description: Event registration endpoints
+
+paths:
+  /auth/line/callback:
+    post:
+      tags:
+        - Auth
+      summary: Line Login Callback
+      description: Exchange Line authorization code for JWT tokens
+      operationId: lineCallback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LineCallbackRequest'
+      responses:
+        '200':
+          description: Authentication successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Authentication failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/refresh:
+    post:
+      tags:
+        - Auth
+      summary: Refresh Token
+      description: Refresh access token using refresh token
+      operationId: refreshToken
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshTokenRequest'
+      responses:
+        '200':
+          description: Token refreshed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          description: Invalid or expired refresh token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: Logout
+      description: Logout the current user
+      operationId: logout
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Logged out successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+
+  /users/me:
+    get:
+      tags:
+        - Users
+      summary: Get Current User
+      description: Get the authenticated user's profile
+      operationId: getCurrentUser
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: User profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/User'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /users/me/events:
+    get:
+      tags:
+        - Users
+      summary: Get My Events
+      description: Get events hosted by the current user
+      operationId: getMyEvents
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of hosted events
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          events:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/Event'
+                          total:
+                            type: integer
+
+  /users/me/registrations:
+    get:
+      tags:
+        - Users
+      summary: Get My Registrations
+      description: Get events the current user has registered for
+      operationId: getMyRegistrations
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: List of registrations
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          registrations:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/RegistrationWithEvent'
+                          total:
+                            type: integer
+
+  /events:
+    get:
+      tags:
+        - Events
+      summary: List Events
+      description: List events with optional filtering by location and skill level
+      operationId: listEvents
+      parameters:
+        - name: lat
+          in: query
+          description: Latitude for geo-based search
+          schema:
+            type: number
+            format: double
+        - name: lng
+          in: query
+          description: Longitude for geo-based search
+          schema:
+            type: number
+            format: double
+        - name: radius
+          in: query
+          description: Search radius in meters (default 10000)
+          schema:
+            type: integer
+            default: 10000
+            maximum: 50000
+        - name: skill_level
+          in: query
+          description: Filter by skill level
+          schema:
+            $ref: '#/components/schemas/SkillLevel'
+        - name: status
+          in: query
+          description: Filter by event status
+          schema:
+            $ref: '#/components/schemas/EventStatus'
+        - name: limit
+          in: query
+          description: Number of results to return
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: offset
+          in: query
+          description: Offset for pagination
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/EventListResponse'
+
+    post:
+      tags:
+        - Events
+      summary: Create Event
+      description: Create a new event
+      operationId: createEvent
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEventRequest'
+      responses:
+        '201':
+          description: Event created successfully
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/CreateEventResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /events/{id}:
+    get:
+      tags:
+        - Events
+      summary: Get Event
+      description: Get event details by ID
+      operationId: getEvent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Event details
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/Event'
+        '404':
+          description: Event not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    put:
+      tags:
+        - Events
+      summary: Update Event
+      description: Update an existing event (host only)
+      operationId: updateEvent
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateEventRequest'
+      responses:
+        '200':
+          description: Event updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '403':
+          description: Not the event host
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Event not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - Events
+      summary: Cancel Event
+      description: Cancel an event (host only)
+      operationId: deleteEvent
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Event cancelled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '403':
+          description: Not the event host
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Event not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /events/{id}/register:
+    post:
+      tags:
+        - Registrations
+      summary: Register for Event
+      description: Register the current user for an event
+      operationId: registerEvent
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Registration successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/RegistrationResponse'
+        '400':
+          description: Cannot register (already registered, event cancelled, etc.)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Event not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - Registrations
+      summary: Cancel Registration
+      description: Cancel the current user's registration for an event
+      operationId: cancelRegistration
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Registration cancelled successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessMessage'
+        '404':
+          description: Registration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /events/{id}/registrations:
+    get:
+      tags:
+        - Registrations
+      summary: Get Event Registrations
+      description: Get all registrations for an event
+      operationId: getEventRegistrations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: List of registrations
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/SuccessResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          confirmed:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/RegistrationWithUser'
+                          waitlist:
+                            type: array
+                            items:
+                              $ref: '#/components/schemas/RegistrationWithUser'
+                          confirmed_count:
+                            type: integer
+                          waitlist_count:
+                            type: integer
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            details:
+              type: object
+
+    SuccessMessage:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            message:
+              type: string
+
+    LineCallbackRequest:
+      type: object
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          description: Authorization code from Line
+        state:
+          type: string
+          description: State parameter for CSRF protection
+        redirect_uri:
+          type: string
+          description: Redirect URI used in the authorization request
+
+    RefreshTokenRequest:
+      type: object
+      required:
+        - refresh_token
+      properties:
+        refresh_token:
+          type: string
+          description: Refresh token
+
+    AuthResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            user:
+              $ref: '#/components/schemas/User'
+            access_token:
+              type: string
+            refresh_token:
+              type: string
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        display_name:
+          type: string
+        avatar_url:
+          type: string
+          format: uri
+        email:
+          type: string
+          format: email
+
+    SkillLevel:
+      type: string
+      enum:
+        - beginner
+        - intermediate
+        - advanced
+        - expert
+        - any
+
+    EventStatus:
+      type: string
+      enum:
+        - open
+        - full
+        - cancelled
+        - completed
+
+    Location:
+      type: object
+      properties:
+        name:
+          type: string
+        address:
+          type: string
+        lat:
+          type: number
+          format: double
+        lng:
+          type: number
+          format: double
+        google_place_id:
+          type: string
+
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        host:
+          $ref: '#/components/schemas/User'
+        title:
+          type: string
+        description:
+          type: string
+        event_date:
+          type: string
+          format: date
+        start_time:
+          type: string
+          pattern: '^\d{2}:\d{2}$'
+        end_time:
+          type: string
+          pattern: '^\d{2}:\d{2}$'
+        location:
+          $ref: '#/components/schemas/Location'
+        capacity:
+          type: integer
+          minimum: 4
+          maximum: 20
+        confirmed_count:
+          type: integer
+        waitlist_count:
+          type: integer
+        skill_level:
+          $ref: '#/components/schemas/SkillLevel'
+        skill_level_label:
+          type: string
+        fee:
+          type: integer
+          minimum: 0
+          maximum: 9999
+        status:
+          $ref: '#/components/schemas/EventStatus'
+
+    EventListResponse:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/Event'
+        total:
+          type: integer
+        has_more:
+          type: boolean
+
+    CreateEventRequest:
+      type: object
+      required:
+        - event_date
+        - start_time
+        - location
+        - capacity
+        - skill_level
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        event_date:
+          type: string
+          format: date
+        start_time:
+          type: string
+          pattern: '^\d{2}:\d{2}$'
+        end_time:
+          type: string
+          pattern: '^\d{2}:\d{2}$'
+        location:
+          type: object
+          required:
+            - name
+            - lat
+            - lng
+          properties:
+            name:
+              type: string
+            address:
+              type: string
+            lat:
+              type: number
+              format: double
+            lng:
+              type: number
+              format: double
+            google_place_id:
+              type: string
+        capacity:
+          type: integer
+          minimum: 4
+          maximum: 20
+        skill_level:
+          $ref: '#/components/schemas/SkillLevel'
+        fee:
+          type: integer
+          minimum: 0
+          maximum: 9999
+          default: 0
+
+    CreateEventResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        share_url:
+          type: string
+          format: uri
+
+    UpdateEventRequest:
+      type: object
+      properties:
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+        event_date:
+          type: string
+          format: date
+        start_time:
+          type: string
+          pattern: '^\d{2}:\d{2}$'
+        end_time:
+          type: string
+          pattern: '^\d{2}:\d{2}$'
+        capacity:
+          type: integer
+          minimum: 4
+          maximum: 20
+        skill_level:
+          $ref: '#/components/schemas/SkillLevel'
+        fee:
+          type: integer
+          minimum: 0
+          maximum: 9999
+        status:
+          type: string
+          enum:
+            - open
+            - full
+            - cancelled
+
+    RegistrationResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - confirmed
+            - waitlist
+        waitlist_position:
+          type: integer
+        message:
+          type: string
+
+    RegistrationWithUser:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        user:
+          $ref: '#/components/schemas/User'
+        registered_at:
+          type: string
+          format: date-time
+        waitlist_position:
+          type: integer
+
+    RegistrationWithEvent:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        event_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+        waitlist_position:
+          type: integer
+        registered_at:
+          type: string
+          format: date-time
+        event:
+          type: object
+          properties:
+            id:
+              type: string
+              format: uuid
+            title:
+              type: string
+            event_date:
+              type: string
+              format: date
+            start_time:
+              type: string
+            location:
+              type: string
+            skill_level:
+              type: string
+            status:
+              type: string

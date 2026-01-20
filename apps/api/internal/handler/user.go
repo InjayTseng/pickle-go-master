@@ -1,110 +1,198 @@
 package handler
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 
+	"github.com/anthropics/pickle-go/apps/api/internal/dto"
 	"github.com/anthropics/pickle-go/apps/api/internal/middleware"
+	"github.com/anthropics/pickle-go/apps/api/internal/repository"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
-// GetCurrentUser returns the current authenticated user
-func GetCurrentUser(c *gin.Context) {
-	claims, ok := middleware.GetAuthUser(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "UNAUTHORIZED",
-				"message": "User not authenticated",
-			},
-		})
-		return
-	}
+// UserHandler handles user-related requests
+type UserHandler struct {
+	userRepo         *repository.UserRepository
+	eventRepo        *repository.EventRepository
+	registrationRepo *repository.RegistrationRepository
+}
 
-	// TODO: Fetch full user data from database
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data": gin.H{
-			"id":           claims.UserID,
-			"display_name": claims.DisplayName,
-		},
-	})
+// NewUserHandler creates a new UserHandler
+func NewUserHandler(userRepo *repository.UserRepository, eventRepo *repository.EventRepository, registrationRepo *repository.RegistrationRepository) *UserHandler {
+	return &UserHandler{
+		userRepo:         userRepo,
+		eventRepo:        eventRepo,
+		registrationRepo: registrationRepo,
+	}
 }
 
 // GetMyEvents returns events hosted by the current user
-func GetMyEvents(c *gin.Context) {
+// GET /api/v1/users/me/events
+func (h *UserHandler) GetMyEvents(c *gin.Context) {
 	claims, ok := middleware.GetAuthUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "UNAUTHORIZED",
-				"message": "User not authenticated",
-			},
-		})
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse("UNAUTHORIZED", "Not authenticated"))
 		return
 	}
 
-	// TODO: Implement fetch user's events from database
-	_ = claims
+	userID, err := uuid.Parse(claims.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse("INVALID_TOKEN", "Invalid user ID"))
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data": gin.H{
-			"events": []interface{}{},
-			"total":  0,
-		},
-	})
+	events, err := h.eventRepo.FindByHostID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to get events"))
+		return
+	}
+
+	// Convert to response format
+	eventResponses := make([]dto.EventResponse, 0, len(events))
+	for _, event := range events {
+		eventResponses = append(eventResponses, dto.EventResponse{
+			ID:        event.ID.String(),
+			Title:     event.Title,
+			EventDate: event.EventDate.Format("2006-01-02"),
+			StartTime: event.StartTime,
+			EndTime:   event.EndTime,
+			Location: dto.LocationResponse{
+				Name:    event.LocationName,
+				Address: event.LocationAddress,
+				Lat:     event.Latitude,
+				Lng:     event.Longitude,
+			},
+			Capacity:        event.Capacity,
+			SkillLevel:      string(event.SkillLevel),
+			SkillLevelLabel: event.GetSkillLevelLabel(),
+			Fee:             event.Fee,
+			Status:          string(event.Status),
+		})
+	}
+
+	c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
+		"events": eventResponses,
+		"total":  len(eventResponses),
+	}))
 }
 
 // GetMyRegistrations returns events the current user has registered for
-func GetMyRegistrations(c *gin.Context) {
+// GET /api/v1/users/me/registrations
+func (h *UserHandler) GetMyRegistrations(c *gin.Context) {
 	claims, ok := middleware.GetAuthUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "UNAUTHORIZED",
-				"message": "User not authenticated",
-			},
-		})
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse("UNAUTHORIZED", "Not authenticated"))
 		return
 	}
 
-	// TODO: Implement fetch user's registrations from database
-	_ = claims
+	userID, err := uuid.Parse(claims.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse("INVALID_TOKEN", "Invalid user ID"))
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data": gin.H{
-			"registrations": []interface{}{},
-			"total":         0,
-		},
-	})
+	registrations, err := h.registrationRepo.FindByUserID(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to get registrations"))
+		return
+	}
+
+	// Get event details for each registration
+	var responses []gin.H
+	for _, reg := range registrations {
+		event, err := h.eventRepo.FindByID(c.Request.Context(), reg.EventID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue // Skip if event not found
+			}
+			continue
+		}
+
+		responses = append(responses, gin.H{
+			"id":                reg.ID.String(),
+			"event_id":          reg.EventID.String(),
+			"status":            string(reg.Status),
+			"waitlist_position": reg.WaitlistPosition,
+			"registered_at":     reg.RegisteredAt,
+			"event": gin.H{
+				"id":          event.ID.String(),
+				"title":       event.Title,
+				"event_date":  event.EventDate.Format("2006-01-02"),
+				"start_time":  event.StartTime,
+				"location":    event.LocationName,
+				"skill_level": string(event.SkillLevel),
+				"status":      string(event.Status),
+			},
+		})
+	}
+
+	if responses == nil {
+		responses = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
+		"registrations": responses,
+		"total":         len(responses),
+	}))
 }
 
 // GetMyNotifications returns notifications for the current user
-func GetMyNotifications(c *gin.Context) {
+// GET /api/v1/users/me/notifications
+func (h *UserHandler) GetMyNotifications(c *gin.Context) {
 	claims, ok := middleware.GetAuthUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "UNAUTHORIZED",
-				"message": "User not authenticated",
-			},
-		})
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse("UNAUTHORIZED", "Not authenticated"))
 		return
 	}
 
-	// TODO: Implement fetch user's notifications from database
+	// For now, return empty notifications (notifications feature to be implemented later)
 	_ = claims
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data": gin.H{
-			"notifications": []interface{}{},
-			"total":         0,
-		},
-	})
+	c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
+		"notifications": []interface{}{},
+		"total":         0,
+		"unread_count":  0,
+	}))
+}
+
+// Legacy handlers for backward compatibility
+
+// GetCurrentUser is the legacy handler
+func GetCurrentUser(c *gin.Context) {
+	claims, ok := middleware.GetAuthUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse("UNAUTHORIZED", "User not authenticated"))
+		return
+	}
+
+	c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
+		"id":           claims.UserID,
+		"display_name": claims.DisplayName,
+	}))
+}
+
+// GetMyEvents is the legacy handler
+func GetMyEvents(c *gin.Context) {
+	c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
+		"events": []interface{}{},
+		"total":  0,
+	}))
+}
+
+// GetMyRegistrations is the legacy handler
+func GetMyRegistrations(c *gin.Context) {
+	c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
+		"registrations": []interface{}{},
+		"total":         0,
+	}))
+}
+
+// GetMyNotifications is the legacy handler
+func GetMyNotifications(c *gin.Context) {
+	c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
+		"notifications": []interface{}{},
+		"total":         0,
+	}))
 }

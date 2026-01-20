@@ -1,23 +1,26 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
+import { Providers } from './providers';
+import { Header } from '@/components/layout/Header';
+import { MobileNav } from '@/components/layout/MobileNav';
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
 
 export const metadata: Metadata = {
   title: {
-    default: 'Pickle Go - 找球局、揪球友',
+    default: 'Pickle Go - Find and Join Pickleball Games',
     template: '%s | Pickle Go',
   },
-  description: '台灣最方便的匹克球揪團平台，30 秒找到附近球局並報名',
-  keywords: ['匹克球', 'pickleball', '揪團', '找球友', '運動'],
+  description: 'The easiest way to find and join pickleball games near you. Create or join events in 30 seconds.',
+  keywords: ['pickleball', 'sports', 'events', 'games', 'community'],
   openGraph: {
     type: 'website',
     locale: 'zh_TW',
     url: 'https://picklego.tw',
     siteName: 'Pickle Go',
-    title: 'Pickle Go - 找球局、揪球友',
-    description: '台灣最方便的匹克球揪團平台，30 秒找到附近球局並報名',
+    title: 'Pickle Go - Find and Join Pickleball Games',
+    description: 'The easiest way to find and join pickleball games near you. Create or join events in 30 seconds.',
   },
 };
 
@@ -29,7 +32,13 @@ export default function RootLayout({
   return (
     <html lang="zh-TW">
       <body className={`${inter.variable} font-sans antialiased`}>
-        {children}
+        <Providers>
+          <div className="relative flex min-h-screen flex-col">
+            <Header />
+            <main className="flex-1 pb-16 md:pb-0">{children}</main>
+            <MobileNav />
+          </div>
+        </Providers>
       </body>
     </html>
   );

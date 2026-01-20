@@ -26,9 +26,13 @@ type Config struct {
 	// Line Login
 	LineChannelID     string
 	LineChannelSecret string
+	LineRedirectURI   string
 
 	// CORS
 	CORSAllowedOrigins []string
+
+	// Application
+	BaseURL string
 }
 
 // Load loads configuration from environment variables
@@ -45,7 +49,9 @@ func Load() (*Config, error) {
 		JWTExpiry:          getEnv("JWT_EXPIRY", "168h"),
 		LineChannelID:      getEnv("LINE_CHANNEL_ID", ""),
 		LineChannelSecret:  getEnv("LINE_CHANNEL_SECRET", ""),
+		LineRedirectURI:    getEnv("LINE_REDIRECT_URI", "http://localhost:3000/auth/callback"),
 		CORSAllowedOrigins: strings.Split(getEnv("CORS_ALLOWED_ORIGINS", "http://localhost:3000"), ","),
+		BaseURL:            getEnv("BASE_URL", "http://localhost:3000"),
 	}
 
 	return cfg, nil

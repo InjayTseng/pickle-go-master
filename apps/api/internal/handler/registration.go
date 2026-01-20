@@ -1,117 +1,296 @@
 package handler
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 
+	"github.com/anthropics/pickle-go/apps/api/internal/dto"
 	"github.com/anthropics/pickle-go/apps/api/internal/middleware"
+	"github.com/anthropics/pickle-go/apps/api/internal/model"
+	"github.com/anthropics/pickle-go/apps/api/internal/repository"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
+// RegistrationHandler handles registration-related requests
+type RegistrationHandler struct {
+	registrationRepo *repository.RegistrationRepository
+	eventRepo        *repository.EventRepository
+}
+
+// NewRegistrationHandler creates a new RegistrationHandler
+func NewRegistrationHandler(registrationRepo *repository.RegistrationRepository, eventRepo *repository.EventRepository) *RegistrationHandler {
+	return &RegistrationHandler{
+		registrationRepo: registrationRepo,
+		eventRepo:        eventRepo,
+	}
+}
+
 // RegisterEvent registers the current user for an event
-func RegisterEvent(c *gin.Context) {
+// POST /api/v1/events/:id/register
+func (h *RegistrationHandler) RegisterEvent(c *gin.Context) {
 	claims, ok := middleware.GetAuthUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "UNAUTHORIZED",
-				"message": "User not authenticated",
-			},
-		})
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse("UNAUTHORIZED", "Not authenticated"))
 		return
 	}
 
-	eventID := c.Param("id")
-	if eventID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "VALIDATION_ERROR",
-				"message": "Event ID is required",
-			},
-		})
+	userID, err := uuid.Parse(claims.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse("INVALID_TOKEN", "Invalid user ID"))
 		return
 	}
 
-	// TODO: Implement registration logic
-	// 1. Check if event exists and is open
-	// 2. Check if user is already registered
-	// 3. Check if event is full
-	// 4. If full, add to waitlist
-	// 5. Create registration record
-	_ = claims
+	eventIDStr := c.Param("id")
+	eventID, err := uuid.Parse(eventIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse("VALIDATION_ERROR", "Invalid event ID"))
+		return
+	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"success": true,
-		"data": gin.H{
-			"status":  "confirmed",
-			"message": "Registration successful!",
-		},
-	})
+	// Check if event exists and is open
+	event, err := h.eventRepo.FindByID(c.Request.Context(), eventID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, dto.ErrorResponse("NOT_FOUND", "Event not found"))
+			return
+		}
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to fetch event"))
+		return
+	}
+
+	// Check event status
+	if event.Status == model.EventStatusCancelled {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse("EVENT_CANCELLED", "This event has been cancelled"))
+		return
+	}
+	if event.Status == model.EventStatusCompleted {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse("EVENT_COMPLETED", "This event has already ended"))
+		return
+	}
+
+	// Check if user is already registered
+	hasRegistered, err := h.registrationRepo.HasUserRegistered(c.Request.Context(), eventID, userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to check registration status"))
+		return
+	}
+	if hasRegistered {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse("ALREADY_REGISTERED", "You are already registered for this event"))
+		return
+	}
+
+	// Check if user is the host
+	if event.HostID == userID {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse("HOST_CANNOT_REGISTER", "You cannot register for your own event"))
+		return
+	}
+
+	// Get current confirmed count
+	confirmedCount, err := h.registrationRepo.CountConfirmed(c.Request.Context(), eventID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to get registration count"))
+		return
+	}
+
+	// Determine registration status
+	var status model.RegistrationStatus
+	var waitlistPosition *int
+	var message string
+
+	if confirmedCount < event.Capacity {
+		// Event has space, confirm registration
+		status = model.RegistrationConfirmed
+		message = "Registration successful!"
+	} else {
+		// Event is full, add to waitlist
+		status = model.RegistrationWaitlist
+		pos, err := h.registrationRepo.GetNextWaitlistPosition(c.Request.Context(), eventID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to get waitlist position"))
+			return
+		}
+		waitlistPosition = &pos
+		message = "Added to waitlist (position " + string(rune('0'+pos)) + ")"
+
+		// Update event status to full if it wasn't already
+		if event.Status != model.EventStatusFull {
+			h.eventRepo.UpdateStatus(c.Request.Context(), eventID, model.EventStatusFull)
+		}
+	}
+
+	// Create registration
+	registration := &model.Registration{
+		ID:               uuid.New(),
+		EventID:          eventID,
+		UserID:           userID,
+		Status:           status,
+		WaitlistPosition: waitlistPosition,
+	}
+
+	if err := h.registrationRepo.Create(c.Request.Context(), registration); err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to create registration"))
+		return
+	}
+
+	c.JSON(http.StatusCreated, dto.SuccessResponse(dto.RegistrationResponse{
+		ID:               registration.ID.String(),
+		EventID:          eventID.String(),
+		Status:           string(status),
+		WaitlistPosition: waitlistPosition,
+		Message:          message,
+	}))
 }
 
 // CancelRegistration cancels the current user's registration for an event
-func CancelRegistration(c *gin.Context) {
+// DELETE /api/v1/events/:id/register
+func (h *RegistrationHandler) CancelRegistration(c *gin.Context) {
 	claims, ok := middleware.GetAuthUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "UNAUTHORIZED",
-				"message": "User not authenticated",
-			},
-		})
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse("UNAUTHORIZED", "Not authenticated"))
 		return
 	}
 
-	eventID := c.Param("id")
-	if eventID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "VALIDATION_ERROR",
-				"message": "Event ID is required",
-			},
-		})
+	userID, err := uuid.Parse(claims.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, dto.ErrorResponse("INVALID_TOKEN", "Invalid user ID"))
 		return
 	}
 
-	// TODO: Implement cancel registration logic
-	// 1. Find user's registration for this event
-	// 2. Check if cancellation is allowed
-	// 3. Update registration status to cancelled
-	// 4. If user was confirmed, promote first waitlist user
-	_ = claims
+	eventIDStr := c.Param("id")
+	eventID, err := uuid.Parse(eventIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse("VALIDATION_ERROR", "Invalid event ID"))
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data": gin.H{
-			"message": "Registration cancelled successfully",
-		},
-	})
+	// Find user's registration for this event
+	registration, err := h.registrationRepo.FindByEventAndUser(c.Request.Context(), eventID, userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			c.JSON(http.StatusNotFound, dto.ErrorResponse("NOT_FOUND", "You are not registered for this event"))
+			return
+		}
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to fetch registration"))
+		return
+	}
+
+	// Check if already cancelled
+	if registration.Status == model.RegistrationCancelled {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse("ALREADY_CANCELLED", "Registration is already cancelled"))
+		return
+	}
+
+	wasConfirmed := registration.Status == model.RegistrationConfirmed
+
+	// Cancel registration
+	if err := h.registrationRepo.UpdateStatus(c.Request.Context(), registration.ID, model.RegistrationCancelled); err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to cancel registration"))
+		return
+	}
+
+	// If user was confirmed, promote first waitlist user
+	if wasConfirmed {
+		promoted, err := h.registrationRepo.PromoteFromWaitlist(c.Request.Context(), eventID)
+		if err == nil && promoted != nil {
+			// TODO: Send notification to promoted user
+			_ = promoted
+		}
+
+		// Check if event should be set back to open
+		event, err := h.eventRepo.FindByID(c.Request.Context(), eventID)
+		if err == nil && event.Status == model.EventStatusFull {
+			confirmedCount, _ := h.registrationRepo.CountConfirmed(c.Request.Context(), eventID)
+			if confirmedCount < event.Capacity {
+				h.eventRepo.UpdateStatus(c.Request.Context(), eventID, model.EventStatusOpen)
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
+		"message": "Registration cancelled successfully",
+	}))
 }
 
 // GetEventRegistrations returns all registrations for an event
-func GetEventRegistrations(c *gin.Context) {
-	eventID := c.Param("id")
-	if eventID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"success": false,
-			"error": gin.H{
-				"code":    "VALIDATION_ERROR",
-				"message": "Event ID is required",
-			},
-		})
+// GET /api/v1/events/:id/registrations
+func (h *RegistrationHandler) GetEventRegistrations(c *gin.Context) {
+	eventIDStr := c.Param("id")
+	eventID, err := uuid.Parse(eventIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, dto.ErrorResponse("VALIDATION_ERROR", "Invalid event ID"))
 		return
 	}
 
-	// TODO: Implement fetch registrations from database
+	// Check if event exists
+	exists, err := h.eventRepo.Exists(c.Request.Context(), eventID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to check event"))
+		return
+	}
+	if !exists {
+		c.JSON(http.StatusNotFound, dto.ErrorResponse("NOT_FOUND", "Event not found"))
+		return
+	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"data": gin.H{
-			"confirmed": []interface{}{},
-			"waitlist":  []interface{}{},
-		},
-	})
+	// Get registrations with user details
+	registrations, err := h.registrationRepo.FindWithUsersByEventID(c.Request.Context(), eventID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, dto.ErrorResponse("INTERNAL_ERROR", "Failed to fetch registrations"))
+		return
+	}
+
+	// Separate confirmed and waitlisted
+	var confirmed []gin.H
+	var waitlist []gin.H
+
+	for _, reg := range registrations {
+		item := gin.H{
+			"id":            reg.ID.String(),
+			"user":          reg.User,
+			"registered_at": reg.RegisteredAt,
+		}
+
+		if reg.Status == model.RegistrationConfirmed {
+			confirmed = append(confirmed, item)
+		} else if reg.Status == model.RegistrationWaitlist {
+			item["waitlist_position"] = reg.WaitlistPosition
+			waitlist = append(waitlist, item)
+		}
+	}
+
+	if confirmed == nil {
+		confirmed = []gin.H{}
+	}
+	if waitlist == nil {
+		waitlist = []gin.H{}
+	}
+
+	c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
+		"confirmed":       confirmed,
+		"waitlist":        waitlist,
+		"confirmed_count": len(confirmed),
+		"waitlist_count":  len(waitlist),
+	}))
+}
+
+// Legacy handlers for backward compatibility
+
+// RegisterEvent is the legacy handler
+func RegisterEvent(c *gin.Context) {
+	c.JSON(http.StatusNotImplemented, dto.ErrorResponse("NOT_IMPLEMENTED", "Handler not configured"))
+}
+
+// CancelRegistration is the legacy handler
+func CancelRegistration(c *gin.Context) {
+	c.JSON(http.StatusNotImplemented, dto.ErrorResponse("NOT_IMPLEMENTED", "Handler not configured"))
+}
+
+// GetEventRegistrations is the legacy handler
+func GetEventRegistrations(c *gin.Context) {
+	c.JSON(http.StatusOK, dto.SuccessResponse(gin.H{
+		"confirmed": []interface{}{},
+		"waitlist":  []interface{}{},
+	}))
 }

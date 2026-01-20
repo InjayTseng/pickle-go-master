@@ -2,8 +2,14 @@ package dto
 
 // LineCallbackRequest represents the request body for Line Login callback
 type LineCallbackRequest struct {
-	Code  string `json:"code" binding:"required"`
-	State string `json:"state"`
+	Code        string `json:"code" binding:"required"`
+	State       string `json:"state"`
+	RedirectURI string `json:"redirect_uri"`
+}
+
+// RefreshTokenRequest represents the request body for refreshing tokens
+type RefreshTokenRequest struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
 }
 
 // CreateEventRequest represents the request body for creating an event
