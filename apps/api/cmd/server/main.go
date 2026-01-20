@@ -15,18 +15,39 @@ import (
 	"github.com/anthropics/pickle-go/apps/api/internal/middleware"
 	"github.com/anthropics/pickle-go/apps/api/internal/repository"
 	"github.com/anthropics/pickle-go/apps/api/pkg/line"
+	"github.com/getsentry/sentry-go"
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
 	// Load configuration
+	// 載入配置
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("Failed to load configuration: %v", err)
 	}
 
+	// Initialize Sentry
+	// 初始化 Sentry 錯誤監控
+	if cfg.SentryDSN != "" {
+		err := middleware.InitSentry(middleware.SentryConfig{
+			DSN:         cfg.SentryDSN,
+			Environment: cfg.SentryEnvironment,
+			Release:     cfg.SentryRelease,
+			Debug:       cfg.IsDevelopment(),
+		})
+		if err != nil {
+			log.Printf("Warning: Failed to initialize Sentry: %v", err)
+		} else {
+			log.Println("Sentry initialized successfully")
+			// 確保在程式結束前將所有事件傳送完畢
+			defer sentry.Flush(2 * time.Second)
+		}
+	}
+
 	// Set Gin mode
-	if cfg.Environment == "production" {
+	// 設定 Gin 模式
+	if cfg.IsProduction() {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
@@ -59,15 +80,24 @@ func main() {
 	registrationHandler := handler.NewRegistrationHandler(registrationRepo, eventRepo, notificationRepo)
 
 	// Initialize router
+	// 初始化路由器
 	router := gin.New()
 
 	// Global middleware
+	// 全域中間件
 	router.Use(gin.Recovery())
 	router.Use(middleware.Logger())
 	router.Use(middleware.CORS(cfg.CORSAllowedOrigins))
 
+	// Sentry middleware (錯誤監控中間件)
+	if cfg.SentryDSN != "" {
+		router.Use(middleware.Sentry())
+		router.Use(middleware.SentryRecovery())
+	}
+
 	// Rate limiting (only in production)
-	if cfg.Environment == "production" {
+	// 速率限制（僅在生產環境）
+	if cfg.IsProduction() {
 		router.Use(middleware.RateLimit())
 	}
 
@@ -84,8 +114,9 @@ func main() {
 	v1 := router.Group("/api/v1")
 	{
 		// Auth routes - with strict rate limiting for security
+		// 認證路由 - 使用嚴格的速率限制以確保安全
 		auth := v1.Group("/auth")
-		if cfg.Environment == "production" {
+		if cfg.IsProduction() {
 			auth.Use(middleware.RateLimitStrict())
 		}
 		{

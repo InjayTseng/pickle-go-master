@@ -3,6 +3,7 @@ module github.com/anthropics/pickle-go/apps/api
 go 1.21
 
 require (
+	github.com/getsentry/sentry-go v0.27.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/golang-jwt/jwt/v5 v5.2.0
 	github.com/google/uuid v1.6.0

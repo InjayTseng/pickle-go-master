@@ -4,6 +4,7 @@ import './globals.css';
 import { Providers } from './providers';
 import { Header } from '@/components/layout/Header';
 import { MobileNav } from '@/components/layout/MobileNav';
+import { GoogleAnalytics } from '@/components/analytics';
 
 const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
 
@@ -100,6 +101,8 @@ export default function RootLayout({
   return (
     <html lang="zh-TW">
       <body className={`${inter.variable} font-sans antialiased`}>
+        {/* Google Analytics 4 */}
+        <GoogleAnalytics />
         <Providers>
           <div className="relative flex min-h-screen flex-col">
             <Header />
