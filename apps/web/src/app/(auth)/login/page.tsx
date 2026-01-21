@@ -22,12 +22,13 @@ function LoginContent() {
     }
   }, [isAuthenticated, isLoading, redirectTo, router]);
 
-  const handleLineLogin = () => {
+  const handleLineLogin = async () => {
     // Store redirect URL for after login
     if (typeof window !== 'undefined') {
       sessionStorage.setItem('login_redirect', redirectTo);
     }
-    window.location.href = getLineLoginURL();
+    const loginUrl = await getLineLoginURL();
+    window.location.href = loginUrl;
   };
 
   if (isLoading) {

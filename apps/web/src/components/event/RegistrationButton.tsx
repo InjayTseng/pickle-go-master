@@ -55,10 +55,14 @@ export function RegistrationButton({
 
   const handleRegister = async () => {
     if (!isAuthenticated) {
-      // Redirect to Line login with return URL
+      // Store return URL in sessionStorage for after login
       const returnUrl = window.location.pathname;
-      const state = encodeURIComponent(JSON.stringify({ returnUrl }));
-      window.location.href = getLineLoginURL(state);
+      if (typeof window !== 'undefined') {
+        sessionStorage.setItem('login_redirect', returnUrl);
+      }
+      // Redirect to Line login with CSRF-protected state
+      const loginUrl = await getLineLoginURL();
+      window.location.href = loginUrl;
       return;
     }
 

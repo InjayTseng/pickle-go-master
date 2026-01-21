@@ -60,6 +60,9 @@ func main() {
 	defer db.Close()
 	log.Println("Connected to database")
 
+	// Initialize transaction manager
+	txManager := database.NewTxManager(db)
+
 	// Initialize repositories
 	userRepo := repository.NewUserRepository(db)
 	eventRepo := repository.NewEventRepository(db)
@@ -77,7 +80,7 @@ func main() {
 	authHandler := handler.NewAuthHandler(userRepo, lineClient)
 	userHandler := handler.NewUserHandler(userRepo, eventRepo, registrationRepo, notificationRepo)
 	eventHandler := handler.NewEventHandler(eventRepo, userRepo, registrationRepo)
-	registrationHandler := handler.NewRegistrationHandler(registrationRepo, eventRepo, notificationRepo)
+	registrationHandler := handler.NewRegistrationHandler(registrationRepo, eventRepo, notificationRepo, txManager)
 
 	// Initialize router
 	// 初始化路由器

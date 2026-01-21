@@ -15,6 +15,17 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+// Secure Cookie options helper
+const getCookieOptions = (days: number): Cookies.CookieAttributes => {
+  const isProduction = process.env.NODE_ENV === 'production';
+  return {
+    expires: days,
+    secure: isProduction, // Only transmit over HTTPS in production
+    sameSite: 'strict',   // Prevent CSRF attacks
+    path: '/',
+  };
+};
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -37,7 +48,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (refreshToken) {
           try {
             const response = await apiClient.refreshAccessToken(refreshToken);
-            Cookies.set('access_token', response.access_token, { expires: 7 });
+            Cookies.set('access_token', response.access_token, getCookieOptions(7));
             setUser(response.user);
           } catch {
             // Refresh failed, clear tokens
@@ -60,10 +71,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const response: AuthResponse = await apiClient.lineCallback(code, state);
 
-      // Store tokens
-      Cookies.set('access_token', response.access_token, { expires: 7 });
+      // Store tokens with secure options
+      Cookies.set('access_token', response.access_token, getCookieOptions(7));
       if (response.refresh_token) {
-        Cookies.set('refresh_token', response.refresh_token, { expires: 30 });
+        Cookies.set('refresh_token', response.refresh_token, getCookieOptions(30));
       }
 
       setUser(response.user);

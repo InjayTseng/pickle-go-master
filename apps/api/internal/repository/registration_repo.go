@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 
 	"github.com/anthropics/pickle-go/apps/api/internal/model"
 	"github.com/google/uuid"
@@ -301,4 +302,247 @@ func (r *RegistrationRepository) GetRegistrationStats(ctx context.Context, event
 		return nil, err
 	}
 	return &stats, nil
+}
+
+// =============================================================================
+// Transactional Methods (Race Condition Safe)
+// =============================================================================
+
+// RegisterWithLock atomically registers a user for an event using row-level locking.
+// This prevents race conditions by locking the event row during the registration process.
+// It handles both new registrations and re-registrations (when a cancelled registration exists).
+func (r *RegistrationRepository) RegisterWithLock(
+	ctx context.Context,
+	tx *sqlx.Tx,
+	eventID, userID uuid.UUID,
+) (*model.Registration, error) {
+	// 1. Lock the event record to prevent concurrent modifications
+	var event struct {
+		Capacity int       `db:"capacity"`
+		Status   string    `db:"status"`
+		HostID   uuid.UUID `db:"host_id"`
+	}
+	err := tx.GetContext(ctx, &event,
+		`SELECT capacity, status, host_id FROM events WHERE id = $1 FOR UPDATE`,
+		eventID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 2. Validate event status
+	if event.Status == "cancelled" || event.Status == "completed" {
+		return nil, ErrEventNotOpen
+	}
+	if event.HostID == userID {
+		return nil, ErrHostCannotRegister
+	}
+
+	// 3. Check for existing registration (including cancelled)
+	var existingReg model.Registration
+	err = tx.GetContext(ctx, &existingReg,
+		`SELECT * FROM registrations WHERE event_id = $1 AND user_id = $2`,
+		eventID, userID)
+
+	hasExisting := err == nil
+	if err != nil && err != sql.ErrNoRows {
+		return nil, err
+	}
+
+	// If user has an active registration, return error
+	if hasExisting && existingReg.Status != model.RegistrationCancelled {
+		return nil, ErrAlreadyRegistered
+	}
+
+	// 4. Count confirmed registrations (within the same locked context)
+	var confirmedCount int
+	err = tx.GetContext(ctx, &confirmedCount,
+		`SELECT COUNT(*) FROM registrations WHERE event_id = $1 AND status = 'confirmed'`,
+		eventID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 5. Determine status based on capacity
+	var status model.RegistrationStatus
+	var waitlistPos *int
+
+	if confirmedCount < event.Capacity {
+		status = model.RegistrationConfirmed
+	} else {
+		status = model.RegistrationWaitlist
+		// Get next waitlist position within transaction
+		var maxPos *int
+		err = tx.GetContext(ctx, &maxPos,
+			`SELECT MAX(waitlist_position) FROM registrations
+			 WHERE event_id = $1 AND status = 'waitlist'`,
+			eventID)
+		if err != nil && err != sql.ErrNoRows {
+			return nil, err
+		}
+		pos := 1
+		if maxPos != nil {
+			pos = *maxPos + 1
+		}
+		waitlistPos = &pos
+	}
+
+	// 6. Create or update registration
+	reg := &model.Registration{
+		EventID:          eventID,
+		UserID:           userID,
+		Status:           status,
+		WaitlistPosition: waitlistPos,
+	}
+
+	if hasExisting {
+		// UPDATE existing cancelled registration (re-registration)
+		reg.ID = existingReg.ID
+		err = tx.QueryRowxContext(ctx, `
+			UPDATE registrations
+			SET status = $2, waitlist_position = $3,
+				registered_at = NOW(),
+				confirmed_at = CASE WHEN $2 = 'confirmed' THEN NOW() ELSE NULL END,
+				cancelled_at = NULL
+			WHERE id = $1
+			RETURNING registered_at, confirmed_at`,
+			reg.ID, status, waitlistPos).Scan(&reg.RegisteredAt, &reg.ConfirmedAt)
+	} else {
+		// INSERT new registration
+		reg.ID = uuid.New()
+		if status == model.RegistrationConfirmed {
+			err = tx.QueryRowxContext(ctx, `
+				INSERT INTO registrations (id, event_id, user_id, status, waitlist_position, registered_at, confirmed_at)
+				VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+				RETURNING registered_at, confirmed_at`,
+				reg.ID, eventID, userID, status, waitlistPos).Scan(&reg.RegisteredAt, &reg.ConfirmedAt)
+		} else {
+			err = tx.QueryRowxContext(ctx, `
+				INSERT INTO registrations (id, event_id, user_id, status, waitlist_position, registered_at)
+				VALUES ($1, $2, $3, $4, $5, NOW())
+				RETURNING registered_at`,
+				reg.ID, eventID, userID, status, waitlistPos).Scan(&reg.RegisteredAt)
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+
+	return reg, nil
+}
+
+// CancelAndPromote atomically cancels a registration and promotes the first waitlisted user.
+// Returns the promoted registration if any, or nil if no one was in the waitlist.
+func (r *RegistrationRepository) CancelAndPromote(
+	ctx context.Context,
+	tx *sqlx.Tx,
+	registrationID, eventID uuid.UUID,
+) (*model.Registration, error) {
+	// 1. Lock and get the registration to cancel
+	var reg model.Registration
+	err := tx.GetContext(ctx, &reg,
+		`SELECT * FROM registrations WHERE id = $1 FOR UPDATE`,
+		registrationID)
+	if err != nil {
+		return nil, err
+	}
+
+	if reg.Status == model.RegistrationCancelled {
+		return nil, ErrAlreadyCancelled
+	}
+
+	wasConfirmed := reg.Status == model.RegistrationConfirmed
+	wasWaitlist := reg.Status == model.RegistrationWaitlist
+	oldWaitlistPos := reg.WaitlistPosition
+
+	// 2. Update to cancelled status
+	_, err = tx.ExecContext(ctx,
+		`UPDATE registrations SET status = 'cancelled', cancelled_at = NOW(), waitlist_position = NULL WHERE id = $1`,
+		registrationID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. If user was in waitlist, reorder remaining waitlist positions
+	if wasWaitlist && oldWaitlistPos != nil {
+		_, err = tx.ExecContext(ctx, `
+			UPDATE registrations
+			SET waitlist_position = waitlist_position - 1
+			WHERE event_id = $1 AND status = 'waitlist' AND waitlist_position > $2`,
+			eventID, *oldWaitlistPos)
+		if err != nil {
+			return nil, err
+		}
+		return nil, nil // No promotion needed for waitlist cancellation
+	}
+
+	// 4. If user was confirmed, promote from waitlist
+	var promoted *model.Registration
+	if wasConfirmed {
+		// Get first waitlist person using SKIP LOCKED to avoid deadlocks
+		var waitlistReg model.Registration
+		err = tx.GetContext(ctx, &waitlistReg, `
+			SELECT * FROM registrations
+			WHERE event_id = $1 AND status = 'waitlist'
+			ORDER BY waitlist_position ASC
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED`,
+			eventID)
+
+		if err == nil {
+			// Promote the waitlisted user
+			_, err = tx.ExecContext(ctx, `
+				UPDATE registrations
+				SET status = 'confirmed', confirmed_at = NOW(), waitlist_position = NULL
+				WHERE id = $1`,
+				waitlistReg.ID)
+			if err != nil {
+				return nil, err
+			}
+
+			// Reorder remaining waitlist positions
+			_, err = tx.ExecContext(ctx, `
+				UPDATE registrations
+				SET waitlist_position = waitlist_position - 1
+				WHERE event_id = $1 AND status = 'waitlist'`,
+				eventID)
+			if err != nil {
+				return nil, err
+			}
+
+			promoted = &waitlistReg
+			promoted.Status = model.RegistrationConfirmed
+			promoted.WaitlistPosition = nil
+		} else if err != sql.ErrNoRows {
+			// Real error, not just empty waitlist
+			return nil, err
+		}
+		// If sql.ErrNoRows, promoted stays nil (no one to promote)
+	}
+
+	return promoted, nil
+}
+
+// GetEventForUpdate locks an event row for update within a transaction
+func (r *RegistrationRepository) GetEventForUpdate(ctx context.Context, tx *sqlx.Tx, eventID uuid.UUID) (capacity int, status string, err error) {
+	var event struct {
+		Capacity int    `db:"capacity"`
+		Status   string `db:"status"`
+	}
+	err = tx.GetContext(ctx, &event,
+		`SELECT capacity, status FROM events WHERE id = $1 FOR UPDATE`,
+		eventID)
+	if err != nil {
+		return 0, "", err
+	}
+	return event.Capacity, event.Status, nil
+}
+
+// CountConfirmedTx counts confirmed registrations within a transaction
+func (r *RegistrationRepository) CountConfirmedTx(ctx context.Context, tx *sqlx.Tx, eventID uuid.UUID) (int, error) {
+	var count int
+	err := tx.GetContext(ctx, &count,
+		`SELECT COUNT(*) FROM registrations WHERE event_id = $1 AND status = 'confirmed'`,
+		eventID)
+	return count, err
 }

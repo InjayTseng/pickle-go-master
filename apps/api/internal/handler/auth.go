@@ -1,9 +1,16 @@
 package handler
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/anthropics/pickle-go/apps/api/internal/dto"
 	"github.com/anthropics/pickle-go/apps/api/internal/middleware"
@@ -29,6 +36,97 @@ func NewAuthHandler(userRepo *repository.UserRepository, lineClient *line.Client
 	}
 }
 
+// stateValidityDuration is the maximum age of a valid state parameter (5 minutes)
+const stateValidityDuration = 5 * time.Minute
+
+// getStateSecret returns the secret used for HMAC state validation
+func getStateSecret() []byte {
+	secret := os.Getenv("STATE_SECRET")
+	if secret == "" {
+		// Fall back to JWT secret if STATE_SECRET is not set
+		secret = os.Getenv("JWT_SECRET")
+	}
+	if secret == "" && (os.Getenv("ENVIRONMENT") == "development" || os.Getenv("ENVIRONMENT") == "") {
+		secret = "dev-state-secret-not-for-production"
+	}
+	return []byte(secret)
+}
+
+// computeStateHmac computes the HMAC signature for state validation
+func computeStateHmac(timestamp, random string) string {
+	mac := hmac.New(sha256.New, getStateSecret())
+	mac.Write([]byte(timestamp + ":" + random))
+	return base64.URLEncoding.EncodeToString(mac.Sum(nil))[:16]
+}
+
+// validateState validates the OAuth state parameter
+// State format: timestamp:random:hmac
+// Validates:
+// 1. Correct format (3 parts separated by colons)
+// 2. Timestamp is recent (within validity duration)
+// 3. HMAC signature (optional, only if server-side secret is configured)
+// Returns true if state is valid and not expired
+func (h *AuthHandler) validateState(state string) bool {
+	if state == "" {
+		return false
+	}
+
+	parts := strings.Split(state, ":")
+	if len(parts) != 3 {
+		return false
+	}
+
+	timestamp, random, providedHmac := parts[0], parts[1], parts[2]
+
+	// Validate random and hmac parts are not empty
+	if random == "" || providedHmac == "" {
+		return false
+	}
+
+	// Parse and validate timestamp (check if within validity duration)
+	ts, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return false
+	}
+
+	// Check if state has expired
+	stateTime := time.Unix(ts, 0)
+	if time.Since(stateTime) > stateValidityDuration {
+		return false
+	}
+
+	// Check if state is from the future (clock skew protection, allow 1 minute)
+	if stateTime.After(time.Now().Add(1 * time.Minute)) {
+		return false
+	}
+
+	// HMAC verification is optional - only verify if STATE_SECRET is explicitly set
+	// This allows the frontend to use a public key for state generation while
+	// still providing timestamp-based expiry protection
+	stateSecret := os.Getenv("STATE_SECRET")
+	if stateSecret != "" {
+		expectedHmac := computeStateHmac(timestamp, random)
+		return hmac.Equal([]byte(providedHmac), []byte(expectedHmac))
+	}
+
+	// If no STATE_SECRET, just validate format and timestamp
+	// The primary CSRF protection is the sessionStorage verification on the client
+	return true
+}
+
+// isStateValidationEnabled returns true if state validation should be enforced
+// In development mode, validation can be skipped if explicitly disabled
+func isStateValidationEnabled() bool {
+	env := os.Getenv("ENVIRONMENT")
+	// In production, always validate
+	if env == "production" {
+		return true
+	}
+	// In development, check if validation is explicitly disabled
+	skipValidation := os.Getenv("SKIP_STATE_VALIDATION")
+	return skipValidation != "true"
+}
+
 // LineCallback handles Line Login OAuth callback
 // POST /api/v1/auth/line/callback
 func (h *AuthHandler) LineCallback(c *gin.Context) {
@@ -36,6 +134,14 @@ func (h *AuthHandler) LineCallback(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, dto.ErrorResponse("VALIDATION_ERROR", "Invalid request body"))
 		return
+	}
+
+	// Validate CSRF state parameter
+	if isStateValidationEnabled() {
+		if !h.validateState(req.State) {
+			c.JSON(http.StatusBadRequest, dto.ErrorResponse("INVALID_STATE", "Invalid or expired state parameter"))
+			return
+		}
 	}
 
 	// Exchange authorization code for access token

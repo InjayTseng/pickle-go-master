@@ -52,6 +52,7 @@ export function EventMap({
 }: EventMapProps) {
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
+  const lastCenterRef = useRef<{ lat: number; lng: number }>(center);
 
   const { isLoaded, loadError } = useLoadScript({
     googleMapsApiKey: process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || '',
@@ -79,11 +80,21 @@ export function EventMap({
     }
   }, [onBoundsChange]);
 
-  const handleCenterChanged = useCallback(() => {
+  const handleIdle = useCallback(() => {
     if (mapRef.current && onCenterChange) {
-      const center = mapRef.current.getCenter();
-      if (center) {
-        onCenterChange({ lat: center.lat(), lng: center.lng() });
+      const newCenter = mapRef.current.getCenter();
+      if (newCenter) {
+        const lat = newCenter.lat();
+        const lng = newCenter.lng();
+        // Only update if center actually changed (avoid infinite loop)
+        // Use ref to avoid recreating callback on every center change
+        if (
+          Math.abs(lat - lastCenterRef.current.lat) > 0.0001 ||
+          Math.abs(lng - lastCenterRef.current.lng) > 0.0001
+        ) {
+          lastCenterRef.current = { lat, lng };
+          onCenterChange({ lat, lng });
+        }
       }
     }
   }, [onCenterChange]);
@@ -141,7 +152,7 @@ export function EventMap({
         onUnmount={onUnmount}
         onClick={handleMapClick}
         onBoundsChanged={handleBoundsChanged}
-        onCenterChanged={handleCenterChanged}
+        onIdle={handleIdle}
       >
         {/* Event Pins */}
         {events.map((event) => (

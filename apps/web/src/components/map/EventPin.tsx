@@ -61,6 +61,7 @@ export function EventPin({ event, onClick, isSelected = false }: EventPinProps) 
         tabIndex={0}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
             onClick?.(event);
           }
         }}

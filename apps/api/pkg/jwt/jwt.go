@@ -28,12 +28,23 @@ type RefreshClaims struct {
 	jwt.RegisteredClaims
 }
 
-func getSecret() []byte {
+var jwtSecret []byte
+
+func init() {
 	secret := os.Getenv("JWT_SECRET")
 	if secret == "" {
-		secret = "your-secret-key-change-in-production"
+		// In development, allow a default secret with a warning
+		if os.Getenv("ENVIRONMENT") == "development" || os.Getenv("ENVIRONMENT") == "" {
+			secret = "dev-secret-key-not-for-production"
+		} else {
+			panic("JWT_SECRET environment variable is required in production")
+		}
 	}
-	return []byte(secret)
+	jwtSecret = []byte(secret)
+}
+
+func getSecret() []byte {
+	return jwtSecret
 }
 
 func getExpiry() time.Duration {
