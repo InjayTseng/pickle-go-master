@@ -15,7 +15,7 @@ color: orange
 **負責 Agent**: `product-strategist`
 
 1.  **指令**: 要求 Product Strategist 審查目前專案狀況、進行 Research。
-2.  **產出**: 撰寫或更新 `PRD-V{N}.md` (其中 N 為版本號，初始為 1)。
+2.  **產出**: 撰寫或更新 `PRD-V{N}.md` (其中 N 為版本號，初始為 0)。
 3.  **檢查點**: 確認 PRD 包含核心需求、使用者故事與驗收標準。
 4.  **下一步**: 交給 Architect。
 

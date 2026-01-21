@@ -84,6 +84,7 @@ Pickle Go 是一個專為台灣匹克球愛好者打造的揪團平台。團主�
 
    ```bash
    # 啟動資料庫
+   cd docker/
    docker compose up -d
 
    # 執行資料庫遷移
